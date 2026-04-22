@@ -1,8 +1,9 @@
 #!/bin/bash
 # Flash a binary to STM32U073CBT6 via SWD
-# Usage: sudo ./flash.sh <binary.bin>
-# Example: sudo ./flash.sh test/test.bin
-#          sudo ./flash.sh blink/blink.bin
+# Usage: sudo ./tools/flash.sh <binary.bin>
+# Example: sudo ./tools/flash.sh app/lora/lora.bin
+#          sudo ./tools/flash.sh app/blink/blink.bin
+# Run from firmware/ directory
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,10 +12,11 @@ if [ -z "$1" ]; then
     echo "Usage: sudo $0 <firmware.bin>"
     echo ""
     echo "Available binaries:"
-    echo "  test/test.bin   - Simple connectivity test (alternating LED blink)"
-    echo "  blink/blink.bin - Multi-pattern LED blink"
+    echo "  app/lora/lora.bin   - LoRa mesh firmware"
+    echo "  app/blink/blink.bin - Multi-pattern LED blink"
+    echo "  app/test/test.bin   - Simple connectivity test"
     echo ""
-    echo "Build first with: cd test && make  (or cd blink && make)"
+    echo "Build first with: cd app/lora && make"
     exit 1
 fi
 

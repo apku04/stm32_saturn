@@ -342,17 +342,24 @@ void usb_cdc_poll(void) {
 
 bool cdc_print_str(const char *str) {
     if (!usb_configured) return false;
-    uint16_t len = 0;
-    while (str[len]) len++;
-    if (!len) return false;
+    uint16_t total = 0;
+    while (str[total]) total++;
+    if (!total) return false;
 
-    /* Wait for EP1 free */
-    for (volatile int t = 0; t < 100000 && ep1_tx_busy; t++)
-        usb_cdc_poll();
+    const uint8_t *p = (const uint8_t *)str;
+    uint16_t remaining = total;
 
-    if (!ep1_tx_busy) {
-        ep1_tx((const uint8_t *)str, len > 64 ? 64 : len);
-        return true;
+    while (remaining > 0) {
+        /* Wait for EP1 free */
+        for (volatile int t = 0; t < 100000 && ep1_tx_busy; t++)
+            usb_cdc_poll();
+
+        if (ep1_tx_busy) return false;
+
+        uint16_t chunk = remaining > 64 ? 64 : remaining;
+        ep1_tx(p, chunk);
+        p += chunk;
+        remaining -= chunk;
     }
-    return false;
+    return true;
 }

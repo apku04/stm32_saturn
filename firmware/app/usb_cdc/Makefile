@@ -3,8 +3,10 @@ CC = arm-none-eabi-gcc
 OBJCOPY = arm-none-eabi-objcopy
 SIZE = arm-none-eabi-size
 
+ROOT = ../..
+
 CFLAGS = -mcpu=cortex-m0plus -mthumb -Os -Wall -ffreestanding -nostdlib
-LDFLAGS = -T ../stm32u073cb.ld -nostartfiles -Wl,--gc-sections
+LDFLAGS = -T $(ROOT)/linker/stm32u073cb.ld -nostartfiles -Wl,--gc-sections
 
 all: $(TARGET).bin
 

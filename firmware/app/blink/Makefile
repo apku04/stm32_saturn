@@ -3,8 +3,10 @@ CC      = $(PREFIX)gcc
 OBJCOPY = $(PREFIX)objcopy
 SIZE    = $(PREFIX)size
 
+ROOT = ../..
+
 CFLAGS  = -mcpu=cortex-m0plus -mthumb -Os -Wall -ffreestanding -nostdlib
-LDFLAGS = -T ../stm32u073cb.ld -nostartfiles -Wl,--gc-sections
+LDFLAGS = -T $(ROOT)/linker/stm32u073cb.ld -nostartfiles -Wl,--gc-sections
 
 .PHONY: all clean
 
