@@ -33,6 +33,7 @@ static void set_data_rate(uint8_t data_rate);
 static void set_tx_power(uint8_t power);
 static void set_macAddr(uint8_t mac_addr);
 static void softwareReset(void);
+static void jump_to_bootloader(void);
 
 static deviceData_t flash_data;
 static ulme Ulme;
@@ -99,6 +100,8 @@ static void menu(uint16_t argc, uint8_t *argv[]) {
         send_commands(argc, argv);
     } else if (strcmp(cmd, "reset") == 0) {
         softwareReset();
+    } else if (strcmp(cmd, "dfu") == 0) {
+        jump_to_bootloader();
     } else if (strcmp(cmd, "version") == 0) {
         print("STM32_LORA_V1\n");
     } else if (strcmp(cmd, "ping") == 0) {
@@ -119,6 +122,7 @@ static void help_command(void) {
           "  ping\n"
           "  version\n"
           "  reset\n"
+          "  dfu - Enter USB DFU bootloader\n"
           "Params: frequency, data_rate, tx_power, mac_address, flash, routing\n");
 }
 
@@ -279,5 +283,49 @@ static void set_macAddr(uint8_t addr) {
 }
 static void softwareReset(void) {
     SCB_AIRCR = 0x05FA0004;  /* SYSRESETREQ */
+    while (1);
+}
+
+#include "usb_cdc.h"
+
+#define SYSTEM_MEMORY_ADDR  0x1FFF0000
+
+static void jump_to_bootloader(void) {
+    typedef void (*pFunction)(void);
+
+    print("Entering DFU bootloader...\n");
+
+    /* Give USB time to send the response */
+    for (volatile int i = 0; i < 200000; i++);
+
+    /* Disable USB pull-up so host sees disconnect */
+    USB_BCDR &= ~USB_BCDR_DPPU;
+    USB_CNTR = 0x0003;  /* FRES + PDWN — power down USB */
+
+    /* Disable SysTick */
+    SYST_CSR = 0;
+
+    /* Disable all NVIC interrupts */
+    NVIC_ICER = 0xFFFFFFFF;
+
+    /* Clear any pending interrupts */
+    NVIC_ISPR = 0;       /* write has no effect on pending; use ICPR */
+    (*(volatile uint32_t *)0xE000E280) = 0xFFFFFFFF;  /* NVIC_ICPR */
+
+    /* Enable SYSCFG clock and remap system memory to 0x00000000 */
+    RCC_APBENR2 |= (1 << 0);  /* SYSCFGEN */
+    SYSCFG_CFGR1 = (SYSCFG_CFGR1 & ~0x3) | 0x1;  /* MEM_MODE = 01 (system memory) */
+
+    __asm volatile ("dsb");
+    __asm volatile ("isb");
+
+    /* Read reset vector from system memory */
+    uint32_t bootloader_sp   = *(volatile uint32_t *)(SYSTEM_MEMORY_ADDR + 0);
+    uint32_t bootloader_addr = *(volatile uint32_t *)(SYSTEM_MEMORY_ADDR + 4);
+
+    /* Set main stack pointer and jump */
+    __asm volatile ("msr msp, %0" :: "r" (bootloader_sp));
+    ((pFunction)bootloader_addr)();
+
     while (1);
 }

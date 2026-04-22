@@ -19,8 +19,13 @@
 #define NVIC_ICER   (*(volatile uint32_t *)0xE000E180)
 #define NVIC_ISPR   (*(volatile uint32_t *)0xE000E200)
 
-/* SCB AIRCR for software reset */
+/* SCB registers */
 #define SCB_AIRCR   (*(volatile uint32_t *)0xE000ED0C)
+#define SCB_VTOR    (*(volatile uint32_t *)0xE000ED08)
+
+/* ---- SYSCFG ---- */
+#define SYSCFG_BASE       0x40010000
+#define SYSCFG_CFGR1      (*(volatile uint32_t *)(SYSCFG_BASE + 0x00))
 
 /* ---- RCC ---- */
 #define RCC_BASE          0x40021000
