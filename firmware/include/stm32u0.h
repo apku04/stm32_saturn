@@ -195,4 +195,27 @@
 /* EP RW bits mask */
 #define EP_RW_BITS        (USB_EP_TYPE | USB_EP_KIND | USB_EP_EA)
 
+/* ---- ADC1 ---- */
+#define ADC1_BASE         0x40012400
+#define ADC1_ISR          (*(volatile uint32_t *)(ADC1_BASE + 0x00))
+#define ADC1_CR           (*(volatile uint32_t *)(ADC1_BASE + 0x08))
+#define ADC1_CFGR1        (*(volatile uint32_t *)(ADC1_BASE + 0x0C))
+#define ADC1_CFGR2        (*(volatile uint32_t *)(ADC1_BASE + 0x10))
+#define ADC1_SMPR         (*(volatile uint32_t *)(ADC1_BASE + 0x14))
+#define ADC1_CHSELR       (*(volatile uint32_t *)(ADC1_BASE + 0x28))
+#define ADC1_DR           (*(volatile uint32_t *)(ADC1_BASE + 0x40))
+#define ADC1_CCR          (*(volatile uint32_t *)(ADC1_BASE + 0x308))
+
+/* ADC ISR bits */
+#define ADC_ISR_ADRDY     (1 << 0)
+#define ADC_ISR_EOC       (1 << 2)
+#define ADC_ISR_EOCAL     (1 << 11)
+
+/* ADC CR bits */
+#define ADC_CR_ADEN       (1 << 0)
+#define ADC_CR_ADDIS      (1 << 1)
+#define ADC_CR_ADSTART    (1 << 2)
+#define ADC_CR_ADCAL      (1 << 31)
+#define ADC_CR_ADVREGEN   (1 << 28)
+
 #endif /* STM32U0_H */

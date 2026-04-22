@@ -20,6 +20,7 @@
 #include "packetBuffer.h"
 #include "terminal.h"
 #include "hal.h"
+#include "adc.h"
 
 /* ---- Globals ---- */
 static uint16_t seq = 0;
@@ -98,7 +99,13 @@ static void beaconHandler(void) {
             pkt.pktDir = OUTGOING;
             pkt.control_app = BEACON;
             pkt.sequence_num = seq;
-            pkt.length = 4;
+
+            /* Include battery voltage (mV) as 2-byte LE payload */
+            uint16_t bat_mv = adc_read_battery_mv();
+            pkt.data[0] = (uint8_t)(bat_mv & 0xFF);
+            pkt.data[1] = (uint8_t)(bat_mv >> 8);
+            pkt.length = 4 + 2;  /* header + 2 bytes battery */
+
             write_packet(&pTxBuf, &pkt);
         }
     }
@@ -195,6 +202,7 @@ void Reset_Handler(void) {
 
     timer_init();
     spi_init();
+    adc_init();
     usb_cdc_init();
     usb_cdc_set_rx_callback(usb_rx_handler);
 

@@ -239,6 +239,29 @@ class TestBeaconAndRouting:
         assert "Routing table" in response
 
 
+class TestBattery:
+    """Battery ADC tests"""
+
+    def test_get_battery(self, serial_port):
+        """Verify battery command returns voltage and raw ADC value"""
+        response = send_command(serial_port, 'get battery')
+        assert "Battery:" in response
+        assert "mV" in response
+        assert "raw:" in response
+        # Parse values
+        import re
+        m = re.search(r'Battery:\s*(\d+)\s*mV\s*\(raw:\s*(\d+)\)', response)
+        assert m, f"Could not parse battery response: {response}"
+        mv = int(m.group(1))
+        raw = int(m.group(2))
+        logging.info(f"\nBattery: {mv} mV (raw: {raw})")
+        # Raw should be non-negative and within 12-bit range
+        assert 0 <= raw <= 4095
+        # mV should match formula: raw * 6600 / 4096
+        expected_mv = raw * 6600 // 4096
+        assert abs(mv - expected_mv) <= 2, f"mV mismatch: got {mv}, expected {expected_mv}"
+
+
 class TestResetCommand:
     """Device reset test"""
 
