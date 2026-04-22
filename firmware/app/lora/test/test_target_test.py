@@ -272,6 +272,95 @@ class TestResetCommand:
         pytest.fail("Device did not come back after reset")
 
 
+class TestDFUBootloader:
+    """DFU bootloader entry and recovery tests"""
+
+    def test_dfu_help_shows_command(self, serial_port):
+        """Verify 'dfu' appears in help output"""
+        response = send_command(serial_port, 'help')
+        assert 'dfu' in response.lower(), "DFU command not listed in help"
+
+    def test_dfu_enter_and_return(self, serial_port):
+        """Test that 'dfu' command enters bootloader, then flash and return to app"""
+        import serial as ser_mod
+        import serial.tools.list_ports
+        import subprocess
+        import os
+
+        port_name = serial_port.name
+
+        # Locate the .bin file relative to this test file
+        test_dir = os.path.dirname(os.path.abspath(__file__))
+        bin_file = os.path.join(test_dir, '..', 'lora.bin')
+        assert os.path.isfile(bin_file), f"Firmware binary not found: {bin_file}"
+
+        # Verify app is running
+        response = send_command(serial_port, 'version')
+        assert 'STM32_LORA' in response
+
+        # Send dfu command — MCU jumps to bootloader
+        serial_port.write(b'dfu\r\n')
+        serial_port.close()
+        time.sleep(2)
+
+        # Verify DFU device appeared (VID 0483, PID df11)
+        dfu_found = False
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            result = subprocess.run(['lsusb'], capture_output=True, text=True)
+            if '0483:df11' in result.stdout:
+                dfu_found = True
+                break
+            time.sleep(0.5)
+        assert dfu_found, "DFU device (0483:df11) did not appear after 'dfu' command"
+
+        # Flash the same firmware back via dfu-util
+        result = subprocess.run(
+            ['sudo', 'dfu-util', '-a', '0', '-s', '0x08000000:leave',
+             '-D', bin_file],
+            capture_output=True, text=True, timeout=30
+        )
+        assert 'File downloaded successfully' in result.stdout, \
+            f"DFU flash failed: {result.stdout} {result.stderr}"
+
+        # Wait for app to re-enumerate as CDC
+        time.sleep(4)
+
+        # Find the STM32 CDC port (may have changed)
+        new_port = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            for p in serial.tools.list_ports.comports():
+                if p.vid and f"{p.vid:04x}" == "0483" and p.pid and f"{p.pid:04x}" == "5740":
+                    new_port = p.device
+                    break
+            if new_port:
+                break
+            time.sleep(0.5)
+        assert new_port, "App did not re-enumerate as USB CDC after DFU flash"
+
+        # Verify app is running by sending version command
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                new_ser = ser_mod.Serial(new_port, 115200, timeout=0.5)
+                time.sleep(0.3)
+                new_ser.reset_input_buffer()
+                new_ser.write(b'version\r\n')
+                time.sleep(0.5)
+                resp = new_ser.read(1024).decode(errors='ignore')
+                new_ser.close()
+                if 'STM32_LORA' in resp:
+                    # Reopen the fixture port for subsequent tests
+                    serial_port.port = new_port
+                    serial_port.open()
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        pytest.fail("App did not respond after DFU round-trip")
+
+
 # ===========================================================================
 #  Two-device communication tests (need 2 STM32 boards)
 # ===========================================================================
