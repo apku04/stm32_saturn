@@ -201,18 +201,18 @@ int i2c_write_reg(uint8_t addr, uint8_t reg, uint16_t val)
 int i2c_read_reg(uint8_t addr, uint8_t reg, uint16_t *val)
 { return i2c_read_reg_impl(I2C1_BASE, addr, reg, val); }
 
-/* ---- I2C2 public API (PB8/PB9, AF6) ---- */
+/* ---- I2C2 public API (PB8=SCL, PB9=SDA, AF4 → I2C1 peripheral) ---- */
 
 void i2c2_init(void)
 {
     /* Enable GPIOB clock */
     RCC_IOPENR |= (1 << 1);
 
-    /* Enable I2C2 clock (bit 22 of APBENR1) */
-    RCC_APBENR1 |= (1 << 22);
+    /* Enable I2C1 clock (bit 21 of APBENR1) — PB8/PB9 AF4 routes to I2C1 */
+    RCC_APBENR1 |= (1 << 21);
     for (volatile int i = 0; i < 10; i++) __asm__("nop");
 
-    /* Configure PB8, PB9 as AF6 open-drain */
+    /* Configure PB8, PB9 as AF mode, open-drain */
     uint32_t m = GPIO_MODER(GPIOB_BASE);
     m &= ~((3 << (INA_SCL_PIN * 2)) | (3 << (INA_SDA_PIN * 2)));
     m |=  ((2 << (INA_SCL_PIN * 2)) | (2 << (INA_SDA_PIN * 2)));
@@ -227,30 +227,30 @@ void i2c2_init(void)
     p |=  ((1 << (INA_SCL_PIN * 2)) | (1 << (INA_SDA_PIN * 2)));
     GPIO_PUPDR(GPIOB_BASE) = p;
 
-    /* AF6 for PB8, PB9 (AFRH register, pins 8-15): bits [3:0]=6, [7:4]=6 */
+    /* AF4 for PB8, PB9 (AFRH register, pins 8-15) */
     uint32_t afrh = GPIO_AFRH(GPIOB_BASE);
     afrh &= ~((0xF << ((INA_SCL_PIN - 8) * 4)) | (0xF << ((INA_SDA_PIN - 8) * 4)));
-    afrh |=  ((6 << ((INA_SCL_PIN - 8) * 4)) | (6 << ((INA_SDA_PIN - 8) * 4)));
+    afrh |=  ((4 << ((INA_SCL_PIN - 8) * 4)) | (4 << ((INA_SDA_PIN - 8) * 4)));
     GPIO_AFRH(GPIOB_BASE) = afrh;
 
-    /* Disable I2C2 before configuration */
-    IC_CR1(I2C2_BASE) = 0;
+    /* Disable I2C1 before configuration */
+    IC_CR1(I2C1_BASE) = 0;
 
-    /* Same timing as I2C1 */
-    IC_TIMINGR(I2C2_BASE) = I2C_TIMING;
+    /* Set timing */
+    IC_TIMINGR(I2C1_BASE) = I2C_TIMING;
 
-    /* Enable I2C2 */
-    IC_CR1(I2C2_BASE) = 1;
+    /* Enable I2C1 */
+    IC_CR1(I2C1_BASE) = 1;
 }
 
 int i2c2_write(uint8_t addr, const uint8_t *data, uint8_t len)
-{ return i2c_write_impl(I2C2_BASE, addr, data, len); }
+{ return i2c_write_impl(I2C1_BASE, addr, data, len); }
 
 int i2c2_read(uint8_t addr, uint8_t *data, uint8_t len)
-{ return i2c_read_impl(I2C2_BASE, addr, data, len); }
+{ return i2c_read_impl(I2C1_BASE, addr, data, len); }
 
 int i2c2_write_reg(uint8_t addr, uint8_t reg, uint16_t val)
-{ return i2c_write_reg_impl(I2C2_BASE, addr, reg, val); }
+{ return i2c_write_reg_impl(I2C1_BASE, addr, reg, val); }
 
 int i2c2_read_reg(uint8_t addr, uint8_t reg, uint16_t *val)
-{ return i2c_read_reg_impl(I2C2_BASE, addr, reg, val); }
+{ return i2c_read_reg_impl(I2C1_BASE, addr, reg, val); }
