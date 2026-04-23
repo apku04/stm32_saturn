@@ -37,3 +37,36 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 
 **Shared with team:** Kotov's PCB topology findings, Yarrick's lock-out reasoning, Cawl's fix principles
 
+### 2026-04-23 — Bat_mv Reroute to INA219 Bus Voltage (Accepted Solution)
+
+**Problem escalation:** Yarrick's ADC fix (commit 44989e2) REJECTED by Eisenhorn
+- PB4 has no ADC on STM32U073CBT6
+- All ADC pins (PA0–PA7, PB0–PB1) occupied by LoRa SPI and GPS UART
+- MCU VBAT pin tied to 3.3V, not battery rail
+- **No software ADC path viable**
+
+**Solution (Cawl architecture decision + Eisenhorn verification):**
+- Use INA219 bus voltage register (0x02) as battery proxy
+- beaconHandler() → `bat_mv = ina219_read_bus_mv()` (was `adc_read_battery_mv()`)
+- adc.c stubbed: all functions return 0, ADC peripheral not initialized, PA15 SENSE_LDO_EN preserved
+- Beacon V2 payload (7 bytes) unchanged — bat_mv and bus_mv both from INA219
+- Trade-off acceptable: both values same (INA219 bus voltage IS battery-side on charging path)
+
+**Verification checklist (Eisenhorn audit — 7/7 PASS):**
+1. ✅ ina219_read_bus_mv() correct (no args, returns uint16_t mV, datasheet compliant)
+2. ✅ Beacon payload unchanged (7 bytes: shunt/bus/bat/chg)
+3. ✅ Double-read harmless (same register, same value)
+4. ✅ I2C init order safe (adc_init before beacon reads)
+5. ✅ adc.c compiles cleanly
+6. ✅ PA15 functionality preserved
+7. ✅ Clean build (22264 text, 108 data, 1932 bss)
+
+**Build status:** CLEAN
+
+**Key decision principle:** Re-source measurements from working sensors (INA219) rather than force impossible ADC channels. Pragmatic solution for current cycle; next PCB revision can add true ADC-based battery monitoring on correct pin.
+
+**Next actions:**
+- Brostin flash test: validate INA219 responses, beacon payload generation
+- Hardware investigation: verify INA219 population/solder joints if no ACK at 0x40
+- Future PCB: route BAT_SENSE to PB1 (sacrifice DIO2, poll via SPI instead) or similar ADC-capable pin
+

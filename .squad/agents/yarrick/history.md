@@ -34,3 +34,24 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 3. On STM32U073, PB8/PB9 support both AF4→I2C1 and AF6→I2C2 — the one-line AF fix was the correct approach
 
 **Cross-sharing:** This decision shared with Ravenor (INA219 now on I2C2, beacon V2 format) and Eisenhorn's lock-out logic documented for future reference
+
+### 2025-07-22 — Battery ADC Channel Fix
+
+**Issue:** Beacon reported `bat=215 mV` instead of ~4000 mV for a 4V LiPo.
+
+**Root Cause:** ADC was reading channel 22, which does not exist on STM32U073. PB4 maps to ADC1_IN13 (not IN22). Additionally, ADC CKMODE=00 (async) was used without configuring the RCC_CCIPR ADCSEL clock source.
+
+**Fix:**
+1. Changed ADC_CHANNEL_BAT from 22 to 13 (empirically verified via GPIO toggle test)
+2. Set CFGR2 CKMODE=01 (PCLK/2 synchronous clock) — no RCC_CCIPR dependency
+3. Added VBATEN guard (CH13 shared with internal VBAT/3)
+4. Added `adc_read_channel_raw()` and `get adcscan` diagnostic command
+
+**Key Lessons:**
+1. STM32U073 ADC channel mapping: PA0-7=CH0-7, PB0=CH8, PB1=CH9, PB4=CH13
+2. CH11/12/13 are shared with internal TEMP/VREFINT/VBAT — must guard CCR enable bits
+3. CKMODE=00 (async) needs RCC_CCIPR ADCSEL; CKMODE=01 (PCLK/2) is self-contained
+4. Web search gives contradictory channel numbers for STM32U073 — always verify empirically
+5. On USB-only power, VCC_BAT_IN may not carry battery voltage (MPPT path issue)
+
+**Open:** Verify bat_mv on user's battery-powered board. If reading is off by a fixed ratio, the divider may not be 1:1 (1M/1M) as assumed.
