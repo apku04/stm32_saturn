@@ -257,6 +257,13 @@ void Reset_Handler(void) {
     network_layer_init(&pRxBuf, &pTxBuf);
     mac_layer_init(&pRxBuf, &pTxBuf);
 
+    /* Print node address so the user can identify this board */
+    {
+        char abuf[32];
+        snprintf(abuf, sizeof(abuf), "[BOOT] node_addr=%u\n", get_mac_address());
+        print(abuf);
+    }
+
     /* Init radio — continue even if it fails (USB still works) */
     uint8_t radio_ok = 0;
     if (radio_init(&pRxBuf, &pTxBuf) == 0) {

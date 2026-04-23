@@ -258,4 +258,7 @@
 #define I2C_CR2_RD_WRN    (1 << 10)
 #define I2C_CR2_AUTOEND   (1 << 25)
 
+/* ---- Unique device ID (96-bit, factory-programmed) ---- */
+#define UID_BASE  0x1FFF6E50UL
+
 #endif /* STM32U0_H */

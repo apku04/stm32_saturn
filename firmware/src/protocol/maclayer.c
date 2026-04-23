@@ -7,6 +7,7 @@
 #include <string.h>
 #include "maclayer.h"
 #include "flash_config.h"
+#include "stm32u0.h"
 
 static GLOB_RET mac_outgoing(Packet *pkt);
 static GLOB_RET mac_incoming(Packet *pkt);
@@ -78,10 +79,20 @@ void mac_layer_init(PacketBuffer *pRxBuf, PacketBuffer *pTxBuf) {
 
     uint8_t stored_addr = 0;
     readFlash(DEVICE_ID, &stored_addr);
-    if (stored_addr >= 1 && stored_addr <= 254)
+    if (stored_addr >= 1 && stored_addr <= 254) {
         Mlme.mAddr = stored_addr;
-    else
-        Mlme.mAddr = 2;
+    } else {
+        /* Derive a unique address from the 96-bit factory UID */
+        uint32_t uid = (*(volatile uint32_t *)(UID_BASE))
+                     ^ (*(volatile uint32_t *)(UID_BASE + 4))
+                     ^ (*(volatile uint32_t *)(UID_BASE + 8));
+        uint8_t derived = (uint8_t)((uid ^ (uid >> 8) ^ (uid >> 16) ^ (uid >> 24)) & 0xFF);
+        if (derived == 0 || derived >= 254)
+            derived = (derived ^ 0x55) & 0xFE;
+        if (derived == 0)
+            derived = 1;
+        Mlme.mAddr = derived;
+    }
 
     srand(4125);
 }
