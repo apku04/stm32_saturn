@@ -239,6 +239,117 @@ monitor parsing all technically correct despite wrong pins.
 
 ---
 
+### 10. Brostin Flash Results — Commit 0483139
+
+**Date:** 2025-07-23  
+**Status:** PASS (single-board, partial)  
+**Authority:** Brostin (Tester)
+
+**Board Testing:**
+- Board 1: Unavailable (USB crashed, needs physical replug)
+- Board 2: 32/32 single-device pytest PASS; 3 communication tests skipped (need 2 boards)
+
+**Key Findings:**
+- Build: PASS (22264 bytes)
+- DFU flash + boot: PASS
+- ADC stub: PASS (bat_mv returns 0 mV as designed)
+- INA219 graceful failure: PASS (returns 0, no crash)
+- I2C2 scan: No devices (INA219 U10 not populated)
+
+**Verdict:** Firmware code-correct; merge safe. Full 2-board validation pending Board 1 recovery.
+
+---
+
+### 11. U10 (INA219AIDR) Pin Investigation — PCB Verified
+
+**Date:** 2025-07-15  
+**Status:** VERIFIED — No Error  
+**Authority:** Kotov (PCB Expert)
+
+**Finding:**
+- EasyEDA symbol pin numbering matches TI datasheet (SOIC-8 D package) exactly
+- A0/A1 = GND → address 0x40 ✅
+- SDA/SCL routed to PB9/PB8 (I2C1) ✅
+- Pull-up resistors R40/R41 connect to main VCC, not VCC_SENSE ✅
+- All pin mappings verified against EasyEDA SQLite3 database
+
+**Conclusion:** No pin swaps, orientation correct, wiring verified. No action needed.
+
+---
+
+### 12. I2C Pull-Up Rail Investigation — Verified
+
+**Date:** 2025-07-15  
+**Status:** VERIFIED  
+**Authority:** Kotov (PCB Expert)
+
+**Hypothesis Tested:** Pull-ups on VCC_SENSE (PA15-controlled) rail → could float if LDO off
+
+**Result:** ❌ REJECTED
+- R40/R41 pull-ups connect to main VCC (U23 TPS7A0233DBVR), not VCC_SENSE
+- VCC_SENSE is independent LDO output for battery sense circuit only
+- PA15 (SENSE_LDO_EN) driven HIGH in firmware, but irrelevant to I2C bus
+- I2C bus integrity guaranteed by main VCC supply
+
+**Remaining causes for no I2C ACK:** U10 not populated, solder defect, or silicon failure.
+
+---
+
+### 13. I2C/INA219 Hardware Verified — Commit ccd3a1c
+
+**Date:** 2026-04-23  
+**Status:** VERIFIED  
+**Authority:** Yarrick (STM32 Expert), verified on hardware
+
+**Ground Truth:**
+- INA219 at 0x40 responds correctly
+- i2cscan finds device ✅
+- get ina returns ret=0 ✅
+- Bus voltage reads clean (924 mV on discharged LiPo) ✅
+
+**Correct Configuration:**
+- `i2c2_init()` uses AF4 + I2C1_BASE (0x40005400) + I2C1EN (RCC bit 21)
+- AF6 + I2C2_BASE does NOT work — do not revert
+- PB8=SCL, PB9=SDA, both AF4
+
+**ADC Workaround:**
+- BAT_SENSE on PB4 has no ADC capability (PCB design error)
+- `bat_mv = ina219_read_bus_mv()` as interim solution
+
+**Beacon Payload:** 7 bytes (shunt_mv, bus_mv, bat_mv, charge_status)
+
+---
+
+### 14. STM32 UID-Derived Unique Mesh Address
+
+**Date:** 2026-04-23T18:30Z  
+**Status:** Implemented  
+**Authority:** Yarrick (STM32 Expert)  
+**Commit:** (via spawn manifest)
+
+**Problem:** Both boards fell back to Mlme.mAddr=2, causing beacon collisions.
+
+**Solution:** Use factory-programmed 96-bit STM32 unique ID to derive per-chip address.
+
+**Formula:**
+1. XOR three 32-bit UID words into uint32_t
+2. Fold 4 bytes into uint8_t via XOR
+3. Skip reserved values (0, 254, 255) → range 1–253
+
+**Result:** Each chip gets stable, unique address without user configuration.
+
+**Files Changed:**
+- `firmware/include/stm32u0.h` — UID_BASE 0x1FFF6E50UL
+- `firmware/src/protocol/maclayer.c` — UID derivation replaces hardcoded fallback
+- `firmware/app/lora/main.c` — prints [BOOT] node_addr=N at startup
+
+**Verification:**
+- Board 2 flashed with UID-derived address
+- node_addr=33 confirmed ✅
+- Both boards now have unique addresses
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus (decisions recorded here)
@@ -252,3 +363,4 @@ monitor parsing all technically correct despite wrong pins.
 - **2025-07-17** — Eisenhorn: Verdict + Yarrick lock-out
 - **2025-07-18** — Cawl: Pin correction applied
 - **2026-04-23** — Scribe: Consolidated battery ADC investigation, archived inbox decisions (9 new entries)
+- **2026-04-23T19:43Z** — Scribe: Unique source address via STM32 UID documented

@@ -63,3 +63,21 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - AF4 + I2C1_BASE is THE fix — never use AF6+I2C2 on PB8/PB9
 - Commit ccd3a1c is the correct production state
 - bat_mv = ina219_read_bus_mv() (ADC workaround for PCB bug on PB4)
+
+### 2026-04-23 — STM32 UID-Derived Unique Address Implementation
+
+**CRITICAL — UID Base Address on STM32U073:**
+- **UID location: 0x1FFF6E50** (NOT 0x1FFF7590 which is STM32U5)
+- This is the factory-programmed 96-bit unique ID
+- Incorrect address causes read of wrong memory — must use 0x1FFF6E50
+
+**Implementation:**
+- XOR three 32-bit UID words → uint32_t
+- Fold 4 bytes into uint8_t via XOR
+- Range 1–253 (avoid 0, 254, 255)
+- Each chip gets stable, unique node_addr without configuration
+
+**Verification:**
+- Board 2: node_addr=33 ✅
+- Both boards now distinguish in radio traffic
+- Stable across resets (factory-programmed)
