@@ -177,7 +177,10 @@ static bool process_received_beacon(Packet *pkt) {
 
     pkt->pOwner = APP;
     pkt->pktDir = INCOMING;
-    pkt->length = pkt->length - 1;
+    /* Only strip CRC byte when routing table was present (CRC is appended
+       by network_outgoing only when mesh_tbl_entries > 0). */
+    if (pkt->mesh_tbl_entries > 0)
+        pkt->length = pkt->length - 1;
     write_packet(Nlme.pktRxBuf, pkt);
     return true;
 }
@@ -195,10 +198,13 @@ static GLOB_RET network_outgoing(Packet *pkt) {
         if (pkt->control_app == BEACON)
             age_routing_table();
 
-        pkt->mesh_tbl_entries = Nlme.num_entries;
+        /* Beacons carry telemetry at data[0]; don't prepend routing table
+           (avoids offset mismatch on the RX decoder). PING/PONG still
+           carry the table for mesh discovery. */
+        pkt->mesh_tbl_entries = (pkt->control_app == BEACON) ? 0 : Nlme.num_entries;
         pkt->destination_adr = BROADCAST;
 
-        if (Nlme.num_entries > 0) {
+        if (pkt->mesh_tbl_entries > 0) {
             uint8_t app_data_len = (pkt->length > APP_HEADER_SIZE) ? (pkt->length - APP_HEADER_SIZE) : 0;
             uint8_t app_backup[50];
             if (app_data_len > 0 && app_data_len <= sizeof(app_backup))
