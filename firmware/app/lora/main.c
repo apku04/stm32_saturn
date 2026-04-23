@@ -145,22 +145,52 @@ static void app_outgoing(Packet *pkt, PacketBuffer *txbuf) {
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
     /* Print received packet info */
     char buf[128];
-    snprintf(buf, sizeof(buf), "[RX] src=%u dst=%u rssi=%d type=%u len=%u\n",
+    snprintf(buf, sizeof(buf), "[RX] src=%u dst=%u rssi=%d prssi=%d type=%u seq=%u len=%u\n",
              pkt->source_adr, pkt->destination_adr, pkt->rssi,
-             pkt->control_app, pkt->length);
+             pkt->prssi, pkt->control_app, pkt->sequence_num, pkt->length);
     print(buf);
 
-    /* Print data payload if present */
-    uint8_t data_len = 0;
-    if (pkt->length > PACKET_HEADER_SIZE)
-        data_len = pkt->length - PACKET_HEADER_SIZE;
-    if (data_len > 0 && data_len < sizeof(pkt->data)) {
-        char dbuf[60];
-        uint8_t n = data_len > 50 ? 50 : data_len;
-        memcpy(dbuf, pkt->data, n);
-        dbuf[n] = '\n';
-        dbuf[n+1] = '\0';
-        print(dbuf);
+    /* Decode beacon telemetry */
+    if (pkt->control_app == BEACON) {
+        uint8_t data_len = 0;
+        if (pkt->length > PACKET_HEADER_SIZE)
+            data_len = pkt->length - PACKET_HEADER_SIZE;
+        uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
+        uint8_t app_off = tbl_bytes;
+        if (data_len >= app_off + 5) {
+            uint16_t bat = pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8);
+            uint16_t sol = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
+            uint8_t  chg = pkt->data[app_off+4];
+            snprintf(buf, sizeof(buf), "[BEACON] bat=%u sol=%u chg=%u entries=%u\n",
+                     bat, sol, chg, pkt->mesh_tbl_entries);
+            print(buf);
+        } else if (data_len >= app_off + 2) {
+            /* Legacy: battery only */
+            uint16_t bat = pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8);
+            snprintf(buf, sizeof(buf), "[BEACON] bat=%u entries=%u\n",
+                     bat, pkt->mesh_tbl_entries);
+            print(buf);
+        } else {
+            /* No telemetry (e.g. PIC24 node) */
+            snprintf(buf, sizeof(buf), "[BEACON] entries=%u\n",
+                     pkt->mesh_tbl_entries);
+            print(buf);
+        }
+    } else {
+        /* Print data payload as hex for non-beacon packets */
+        uint8_t data_len = 0;
+        if (pkt->length > PACKET_HEADER_SIZE)
+            data_len = pkt->length - PACKET_HEADER_SIZE;
+        if (data_len > 0 && data_len < sizeof(pkt->data)) {
+            char hbuf[128];
+            uint8_t n = data_len > 40 ? 40 : data_len;
+            int pos = 0;
+            for (uint8_t i = 0; i < n && pos < (int)sizeof(hbuf) - 4; i++)
+                pos += snprintf(hbuf + pos, sizeof(hbuf) - pos, "%02X ", pkt->data[i]);
+            hbuf[pos++] = '\n';
+            hbuf[pos] = '\0';
+            print(hbuf);
+        }
     }
 
     /* Reply to PING */
