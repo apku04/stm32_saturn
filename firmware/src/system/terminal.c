@@ -248,6 +248,20 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
             }
         }
         print("Done\n");
+    } else if (strcmp((const char *)argv[1], "adcscan") == 0) {
+        print("ADC scan ch0-19:\n");
+        for (uint8_t ch = 0; ch <= 19; ch++) {
+            uint16_t raw = adc_read_channel_raw(ch);
+            if (raw > 20) {
+                uint32_t mv = ((uint32_t)raw * 3300UL) / 4096UL;
+                snprintf(buf, sizeof(buf), "  CH%02u: raw=%4u  pin=%4lumV\n", ch, raw, (unsigned long)mv);
+                print(buf);
+            }
+        }
+        uint16_t bat = adc_read_battery_mv();
+        uint16_t braw = adc_read_battery_raw();
+        snprintf(buf, sizeof(buf), "bat_mv=%u (raw=%u)\n", bat, braw);
+        print(buf);
     }
 }
 
