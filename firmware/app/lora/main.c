@@ -39,20 +39,10 @@ static void app_outgoing(Packet *pkt, PacketBuffer *txbuf);
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf);
 static void usb_rx_handler(uint8_t *data, uint16_t len);
 
-/* ---- LED helpers ---- */
-void led1_toggle(void) {
-    static uint8_t st = 0;
-    if (st) GPIO_BSRR(GPIOB_BASE) = (1 << (LED1_PIN + 16));
-    else    GPIO_BSRR(GPIOB_BASE) = (1 << LED1_PIN);
-    st = !st;
-}
-static void led2_toggle(void) {
-    static uint8_t st = 0;
-    if (st) GPIO_BSRR(GPIOB_BASE) = (1 << (LED2_PIN + 16));
-    else    GPIO_BSRR(GPIOB_BASE) = (1 << LED2_PIN);
-    st = !st;
-}
-static void led1_on(void) { GPIO_BSRR(GPIOB_BASE) = (1 << LED1_PIN); }
+/* ---- LED helpers (PB13/PB14 reassigned to I2C2 for INA219) ---- */
+void led1_toggle(void) { /* disabled — pin used by I2C2 */ }
+static void led2_toggle(void) { /* disabled — pin used by I2C2 */ }
+static void led1_on(void) { /* disabled — pin used by I2C2 */ }
 
 /* ---- Clock: HSI16 as SYSCLK, HSI48 for USB ---- */
 static void clock_init(void) {
@@ -66,14 +56,9 @@ static void clock_init(void) {
     while ((RCC_CFGR & (7U << 3)) != (1U << 3));
 }
 
-/* ---- LED GPIO init (PB13, PB14) ---- */
+/* ---- LED GPIO init (PB13/PB14 now used by I2C2 — skip) ---- */
 static void led_init(void) {
-    RCC_IOPENR |= (1 << 1);  /* GPIOBEN */
-    for (volatile int i = 0; i < 10; i++) __asm__("nop");
-    uint32_t m = GPIO_MODER(GPIOB_BASE);
-    m &= ~((3 << (LED1_PIN*2)) | (3 << (LED2_PIN*2)));
-    m |=  ((1 << (LED1_PIN*2)) | (1 << (LED2_PIN*2)));
-    GPIO_MODER(GPIOB_BASE) = m;
+    /* LEDs disabled: PB13/PB14 reassigned to I2C2 for INA219 */
 }
 
 /* ---- General GPIO for radio, etc. ---- */
@@ -101,16 +86,19 @@ static void beaconHandler(void) {
             pkt.control_app = BEACON;
             pkt.sequence_num = seq;
 
-            /* Beacon payload: bat_mv(2) + solar_mv(2) + charge_status(1) */
-            uint16_t bat_mv = adc_read_battery_mv();
-            uint16_t sol_mv = ina219_read_bus_mv();
-            uint8_t  chg    = (uint8_t)charge_get_status();
-            pkt.data[0] = (uint8_t)(bat_mv & 0xFF);
-            pkt.data[1] = (uint8_t)(bat_mv >> 8);
-            pkt.data[2] = (uint8_t)(sol_mv & 0xFF);
-            pkt.data[3] = (uint8_t)(sol_mv >> 8);
-            pkt.data[4] = chg;
-            pkt.length = 4 + 5;  /* header + 5 bytes telemetry */
+            /* Beacon payload: shunt_mv(2) + bus_mv(2) + bat_mv(2) + charge_status(1) */
+            int16_t  shunt_mv = ina219_read_shunt_mv();
+            uint16_t bus_mv   = ina219_read_bus_mv();
+            uint16_t bat_mv   = adc_read_battery_mv();
+            uint8_t  chg      = (uint8_t)charge_get_status();
+            pkt.data[0] = (uint8_t)(shunt_mv & 0xFF);
+            pkt.data[1] = (uint8_t)((uint16_t)shunt_mv >> 8);
+            pkt.data[2] = (uint8_t)(bus_mv & 0xFF);
+            pkt.data[3] = (uint8_t)(bus_mv >> 8);
+            pkt.data[4] = (uint8_t)(bat_mv & 0xFF);
+            pkt.data[5] = (uint8_t)(bat_mv >> 8);
+            pkt.data[6] = chg;
+            pkt.length = 4 + 7;  /* header + 7 bytes telemetry */
 
             write_packet(&pTxBuf, &pkt);
         }
@@ -157,7 +145,17 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             data_len = pkt->length - PACKET_HEADER_SIZE;
         uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
         uint8_t app_off = tbl_bytes;
-        if (data_len >= app_off + 5) {
+        if (data_len >= app_off + 7) {
+            /* New format: shunt(2) + bus(2) + bat(2) + chg(1) */
+            int16_t  shunt = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
+            uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
+            uint16_t bat   = pkt->data[app_off+4] | ((uint16_t)pkt->data[app_off+5] << 8);
+            uint8_t  chg   = pkt->data[app_off+6];
+            snprintf(buf, sizeof(buf), "[BEACON] shunt=%d bus=%u bat=%u chg=%u entries=%u\n",
+                     shunt, bus, bat, chg, pkt->mesh_tbl_entries);
+            print(buf);
+        } else if (data_len >= app_off + 5) {
+            /* Legacy: bat + sol + chg */
             uint16_t bat = pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8);
             uint16_t sol = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
             uint8_t  chg = pkt->data[app_off+4];

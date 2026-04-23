@@ -1,7 +1,8 @@
 /*
- * ina219.c — INA219 bus voltage reading + charger status GPIOs
+ * ina219.c — INA219 bus/shunt voltage reading + charger status GPIOs
  *
- * INA219 on I2C2 at address 0x40 (A0=A1=GND), PB8=SCL, PB9=SDA.
+ * INA219 on I2C2 at address 0x40 (A0=A1=GND), PB13=SCL, PB14=SDA.
+ * Shunt voltage register (0x01): signed 16-bit, LSB = 10µV.
  * Bus voltage register (0x02): bits [15:3] = voltage, LSB = 4 mV.
  *
  * Charge status (TP4056-style):
@@ -20,6 +21,7 @@
 
 /* INA219 registers */
 #define INA219_REG_CONFIG   0x00
+#define INA219_REG_SHUNT_V  0x01
 #define INA219_REG_BUS_V    0x02
 
 /* Default config: 32V range, 320mV shunt, 12-bit, continuous */
@@ -45,17 +47,29 @@ void ina219_init(void)
     p |=  (1 << (BAT_STDBY_PIN * 2));  /* pull-up */
     GPIO_PUPDR(GPIOA_BASE) = p;
 
-    /* Init I2C */
-    i2c_init();
+    /* Init I2C2 (INA219 is on I2C2: PB13/PB14) */
+    i2c2_init();
 
     /* Write default configuration to INA219 */
-    i2c_write_reg(INA219_ADDR, INA219_REG_CONFIG, INA219_CONFIG_DEFAULT);
+    i2c2_write_reg(INA219_ADDR, INA219_REG_CONFIG, INA219_CONFIG_DEFAULT);
+}
+
+int16_t ina219_read_shunt_mv(void)
+{
+    uint16_t raw = 0;
+    if (i2c2_read_reg(INA219_ADDR, INA219_REG_SHUNT_V, &raw) != 0)
+        return 0;
+
+    /* raw is signed 16-bit, LSB = 10µV.
+     * shunt_mv = raw * 10 / 1000 = raw / 100 */
+    int16_t shunt_mv = (int16_t)(((int32_t)(int16_t)raw * 10) / 1000);
+    return shunt_mv;
 }
 
 uint16_t ina219_read_bus_mv(void)
 {
     uint16_t raw = 0;
-    if (i2c_read_reg(INA219_ADDR, INA219_REG_BUS_V, &raw) != 0)
+    if (i2c2_read_reg(INA219_ADDR, INA219_REG_BUS_V, &raw) != 0)
         return 0;
 
     /* Bits [15:3] contain the voltage, LSB = 4 mV.

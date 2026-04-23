@@ -48,6 +48,9 @@ RX_PATTERN = re.compile(
 RX_PATTERN_LEGACY = re.compile(
     r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+type=(\d+)\s+len=(\d+)"
 )
+BEACON_PATTERN_V2 = re.compile(
+    r"\[BEACON\]\s+shunt=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+entries=(\d+)"
+)
 BEACON_PATTERN = re.compile(
     r"\[BEACON\]\s+bat=(\d+)\s+sol=(\d+)\s+chg=(\d+)\s+entries=(\d+)"
 )
@@ -116,9 +119,9 @@ class LoRaMonitor:
         bcn_frame = ttk.Frame(nb, padding=8)
         nb.add(bcn_frame, text="Beacons")
 
-        bcn_cols = ("time", "src", "rssi", "prssi", "bat_v", "sol_v", "charge", "entries")
+        bcn_cols = ("time", "src", "rssi", "prssi", "shunt_mv", "bus_v", "bat_v", "charge", "entries")
         self.bcn_tree = ttk.Treeview(bcn_frame, columns=bcn_cols, show="headings", height=14)
-        for c, w in zip(bcn_cols, (70, 50, 50, 50, 90, 90, 80, 60)):
+        for c, w in zip(bcn_cols, (70, 50, 50, 50, 80, 90, 90, 80, 60)):
             self.bcn_tree.heading(c, text=c.upper().replace("_", " "))
             self.bcn_tree.column(c, width=w, minwidth=30)
         self.bcn_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
@@ -238,11 +241,12 @@ class LoRaMonitor:
                     self.root.after(0, self._log, line + "\n")
 
                     # Check for [BEACON] line (follows a [RX] with type=0)
-                    bcn = BEACON_PATTERN.match(line)
-                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not bcn else None
-                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not bcn and not bcn_leg else None
-                    if bcn or bcn_leg or bcn_min:
-                        beacon_data = self._parse_beacon(bcn or bcn_leg or bcn_min)
+                    bcn_v2 = BEACON_PATTERN_V2.match(line)
+                    bcn = BEACON_PATTERN.match(line) if not bcn_v2 else None
+                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not bcn_v2 and not bcn else None
+                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not bcn_v2 and not bcn and not bcn_leg else None
+                    if bcn_v2 or bcn or bcn_leg or bcn_min:
+                        beacon_data = self._parse_beacon(bcn_v2 or bcn or bcn_leg or bcn_min)
                         if pending_rx:
                             self.root.after(0, self._add_rx_packet, pending_rx, beacon_data)
                             pending_rx = None
@@ -282,12 +286,20 @@ class LoRaMonitor:
 
     def _parse_beacon(self, m):
         groups = m.groups()
-        if len(groups) == 4:
-            return {"bat": groups[0], "sol": groups[1], "chg": groups[2], "entries": groups[3]}
+        if len(groups) == 5:
+            # V2: shunt, bus, bat, chg, entries
+            return {"shunt": groups[0], "bus": groups[1], "bat": groups[2],
+                    "chg": groups[3], "entries": groups[4]}
+        elif len(groups) == 4:
+            # Legacy: bat, sol, chg, entries
+            return {"shunt": "—", "bus": groups[1], "bat": groups[0],
+                    "chg": groups[2], "entries": groups[3]}
         elif len(groups) == 2:
-            return {"bat": groups[0], "sol": "—", "chg": "—", "entries": groups[1]}
+            return {"shunt": "—", "bus": "—", "bat": groups[0],
+                    "chg": "—", "entries": groups[1]}
         else:
-            return {"bat": "—", "sol": "—", "chg": "—", "entries": groups[0]}
+            return {"shunt": "—", "bus": "—", "bat": "—",
+                    "chg": "—", "entries": groups[0]}
 
     # ---------------------------------------------------- Packet display
     def _add_rx_packet(self, rx, beacon):
@@ -296,15 +308,16 @@ class LoRaMonitor:
 
         info = ""
         if beacon:
+            shunt_s = f"{beacon['shunt']}mV" if beacon["shunt"] != "—" else "—"
+            bus_v = f"{int(beacon['bus'])/1000:.2f}V" if beacon["bus"] != "—" else "—"
             bat_v = f"{int(beacon['bat'])/1000:.2f}V" if beacon["bat"] != "—" else "—"
-            sol_v = f"{int(beacon['sol'])/1000:.2f}V" if beacon["sol"] != "—" else "—"
             chg_s = CHARGE_STATUS.get(beacon["chg"], beacon["chg"])
-            info = f"Bat={bat_v}  Solar={sol_v}  Charge={chg_s}  Routes={beacon['entries']}"
+            info = f"Shunt={shunt_s}  Bus={bus_v}  Bat={bat_v}  Charge={chg_s}  Routes={beacon['entries']}"
 
             # Add to beacon tree
             self.bcn_tree.insert("", 0, values=(
                 ts, rx["src"], rx["rssi"], rx["prssi"],
-                bat_v, sol_v, chg_s, beacon["entries"]
+                shunt_s, bus_v, bat_v, chg_s, beacon["entries"]
             ))
             # Trim beacon tree
             children = self.bcn_tree.get_children()

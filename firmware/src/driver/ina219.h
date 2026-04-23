@@ -1,5 +1,5 @@
 /*
- * ina219.h — INA219 solar voltage + charge status
+ * ina219.h — INA219 current/voltage sensor + charge status
  */
 
 #ifndef INA219_H
@@ -15,7 +15,8 @@ typedef enum {
 } ChargeStatus;
 
 void          ina219_init(void);
-uint16_t      ina219_read_bus_mv(void);     /* solar input voltage in mV */
+int16_t       ina219_read_shunt_mv(void);   /* shunt voltage in mV (signed) */
+uint16_t      ina219_read_bus_mv(void);      /* bus (solar) voltage in mV */
 ChargeStatus  charge_get_status(void);
 const char   *charge_status_str(ChargeStatus s);
 
