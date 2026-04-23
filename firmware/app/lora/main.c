@@ -93,7 +93,9 @@ static void beaconHandler(void) {
             /* Beacon payload: shunt_mv(2) + bus_mv(2) + bat_mv(2) + charge_status(1) */
             int16_t  shunt_mv = ina219_read_shunt_mv();
             uint16_t bus_mv   = ina219_read_bus_mv();
-            uint16_t bat_mv   = adc_read_battery_mv();
+            /* ADC bat sense not usable (PB4 has no ADC on STM32U073) —
+               using INA219 bus voltage as battery proxy */
+            uint16_t bat_mv   = ina219_read_bus_mv();
             uint8_t  chg      = (uint8_t)charge_get_status();
             pkt.data[0] = (uint8_t)(shunt_mv & 0xFF);
             pkt.data[1] = (uint8_t)((uint16_t)shunt_mv >> 8);
