@@ -159,9 +159,12 @@ def serial_ports():
     ports = SerialPorts()
     if len(ports.sers) < 2:
         pytest.skip("Need at least 2 STM32 devices for communication tests")
-    # Set unique MAC addresses
+    # Ensure both devices share known-good radio config (earlier tests may change it)
     for idx, ser in enumerate(ports.sers):
         mac_addr = 10 + idx
+        send_command(ser, "set frequency 868000000")
+        send_command(ser, "set data_rate 7")
+        send_command(ser, "set tx_power 14")
         send_command(ser, f"set mac_address {mac_addr}")
         send_command(ser, "set beacon 0")
         logging.info(f"Set {ser.name} MAC address to {mac_addr}")

@@ -42,30 +42,38 @@ def wait_for_data(ser, timeout=10):
         raise Exception("wait_for_data Timeout")
 
 
+RX_PATTERN = re.compile(
+    r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+prssi=(-?\d+)\s+"
+    r"type=(\d+)\s+seq=(\d+)\s+len=(\d+)"
+)
+
+
 def parse_response(response):
-    """Parse received message into header and message parts"""
-    parts = response.split("|")
-    if len(parts) >= 2:
-        response_header = parts[0]
-        response_hex = parts[1]
-        response_hex = response_hex.replace('\r', '').replace('\n', '').replace('\x00', '').strip()
-        if response_hex.endswith('Done'):
-            response_hex = response_hex[:-4]
-        hex_match = re.match(r'^([0-9A-Fa-f]*)', response_hex)
-        if hex_match:
-            response_hex = hex_match.group(1)
-        if len(response_hex) % 2 != 0:
-            response_hex = response_hex[:-1]
-        try:
-            if response_hex:
-                response_message = bytes.fromhex(response_hex).decode('ascii', errors='ignore')
-                response_message = response_message.replace('\x00', '').strip()
-            else:
-                response_message = ""
-        except ValueError:
-            response_message = response_hex
-        values = tuple(int(value) for value in response_header.split(','))
-        header = Header(*values)
+    """Parse STM32 [RX] output into header and message parts.
+
+    Firmware format (two lines):
+        [RX] src=1 dst=2 rssi=-80 prssi=-80 type=0 seq=42 len=18
+        48 65 6C 6C 6F 2C 20 77 6F 72 6C 64 21
+    """
+    m = RX_PATTERN.search(response)
+    if m:
+        src, dst, rssi, prssi, msg_type, seq, length = (int(v) for v in m.groups())
+        header = Header(
+            rssi=rssi, prssi=prssi, rxCnt=0,
+            destination_adr=dst, source_adr=src,
+            sequence_num=seq, control_mac=0, protocol_Ver=0,
+            TTL=0, mesh_dest=0, mesh_tbl_entries=0,
+            mesh_src=0, control_app=msg_type, length=length,
+        )
+        # Payload hex is on the line(s) after the [RX] line
+        after_rx = response[m.end():].strip()
+        hex_line = after_rx.split('\n')[0] if after_rx else ""
+        hex_bytes = re.findall(r'[0-9A-Fa-f]{2}', hex_line)
+        if hex_bytes:
+            response_message = bytes(int(b, 16) for b in hex_bytes).decode('ascii', errors='ignore')
+            response_message = response_message.replace('\x00', '').strip()
+        else:
+            response_message = ""
         return header, response_message
     return None, response
 

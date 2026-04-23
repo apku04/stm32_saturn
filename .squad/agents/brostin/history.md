@@ -39,3 +39,45 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - Test app limited (LED-blink only, use lora app terminal for validation)
 
 **Cross-share with Ravenor:** I2C2/INA219 topology, Beacon V2 format, Kotov's PCB findings, Cawl's pin-locking principles
+
+### 2026-04-23 — Full Test Run (commit 910cb9c / bd9ec70)
+
+**Hardware tested:** 2 × STM32U073CBT6 boards (S/N: 0001), both on USB 3 hubs (Bus 001 + Bus 003).
+
+**Build:** Clean rebuild passed. 22320 bytes text. No errors.
+
+**Flash:** Both boards flashed via DFU (dfu_flash.sh --enter + manual for board 2). DFU round-trip works reliably.
+
+**Pytest results:** 32/35 passed, 3 failed (106s total).
+- All 32 single-target tests pass (terminal, radio config, error handling, flash, DFU, battery ADC, reset).
+- 3 target-to-target message tests fail due to `parse_response()` format mismatch — expects PIC24 pipe-separated `header|hexdata` format but firmware outputs `[RX] src=X...\nHH HH HH`. Radio TX/RX itself works.
+
+**INA219 status:** Not responding on either board. `get i2cscan` completes cleanly, no device at 0x40. I2C2 driver (PB8/PB9 AF6) initializes OK — hardware issue. Both boards may lack INA219 or have different wiring. Firmware gracefully returns 0. Beacons include shunt=0 bus=0.
+
+**V2 beacon format confirmed working:** Board-to-board beacons show `[BEACON] shunt=0 bus=0 bat=215 chg=1 entries=2`. All 4 fields present. Bidirectional.
+
+**Battery ADC:** 170–215 mV on USB-only power (no LiPo). Formula raw×6600/4096 verified correct. Higher than expected 0-100 mV; likely high-Z divider leakage.
+
+**Key finding — test_target_test.py needs parse_response() update:** The pipe-separated format `header|hexdata` was a PIC24 convention. STM32 firmware uses the `[RX]` + hex dump format. The 3 failing tests are false negatives — create a ticket to update the parser.
+
+### 2026-04-23 — Parser Fix (parse_response format mismatch)
+
+**Task:** Fix 3 failing pytest tests caused by `parse_response()` expecting PIC24 pipe-delimited format while STM32 firmware outputs `[RX]` format.
+
+**Changes made:**
+1. **test_target_test.py** — Rewrote `parse_response()`:
+   - Old: split on `|`, expected `header_csv|hexdata` (PIC24 convention)
+   - New: regex match `[RX] src=X dst=X rssi=X prssi=X type=X seq=X len=X`, then decode space-separated hex payload from next line
+   - Uses same RX_PATTERN as `lora_monitor.py` for consistency
+   - Maps [RX] fields to Header dataclass (src→source_adr, dst→destination_adr, type→control_app, etc.)
+
+2. **conftest.py** — Added radio config reset to `serial_ports` fixture:
+   - Sets frequency/data_rate/tx_power to known defaults on both boards before communication tests
+   - Prevents cross-test contamination from earlier single-device tests
+
+**Verification:**
+- Local unit tests: 5/5 pass (various [RX] formats, edge cases)
+- Isolated pytest run: test_send_receive_message PASSED with new parser (confirmed [RX] + hex parsing works end-to-end)
+- Full suite: 32 passed / 3 failed — communication tests fail due to radio hardware not responding (separate from parser fix)
+
+**Remaining issue:** Radio intermittently non-functional. Both boards on identical config (868MHz, SF7, 14dBm), `send` returns Done, but receiver gets 0 bytes. Possible SX1262 RX mode issue after repeated DFU cycles, or antenna/proximity problem. Not a test code bug.
