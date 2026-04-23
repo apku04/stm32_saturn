@@ -55,3 +55,11 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 5. On USB-only power, VCC_BAT_IN may not carry battery voltage (MPPT path issue)
 
 **Open:** Verify bat_mv on user's battery-powered board. If reading is off by a fixed ratio, the divider may not be 1:1 (1M/1M) as assumed.
+
+### 2026-04-23 — I2C confirmed working on hardware
+- i2cscan found INA219 at 0x40 ✅
+- get ina: ret=0 for both shunt and bus registers ✅  
+- bus voltage 924mV (LiPo discharged) — sensor reads correctly
+- AF4 + I2C1_BASE is THE fix — never use AF6+I2C2 on PB8/PB9
+- Commit ccd3a1c is the correct production state
+- bat_mv = ina219_read_bus_mv() (ADC workaround for PCB bug on PB4)

@@ -81,3 +81,9 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 **Key insight:** Three independent PCB problems compound the issue. No software-only ADC path exists. Recommended: use INA219 bus voltage as battery proxy for current cycle.
 
 **Shared with team:** PCB methodology (SQLite3 DB querying), hardware constraint analysis process, workaround justification for architectural decisions (Cawl).
+
+### 2026-04-23 — PCB note: ADC bug confirmed
+- BAT_SENSE on PB4 has no ADC channel on STM32U073CBT6 — firmware workaround in place
+- INA219 pull-ups R40/R41 (4.7kΩ) on main VCC confirmed working
+- INA219 SOIC-8 D-package: Pin1=A1, Pin2=A0, Pin3=SDA, Pin4=SCL, Pin5=VS, Pin6=GND, Pin7=VIN-, Pin8=VIN+
+- A0=A1=GND → address 0x40 confirmed
