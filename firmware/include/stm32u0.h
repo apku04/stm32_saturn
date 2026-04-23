@@ -218,4 +218,34 @@
 #define ADC_CR_ADCAL      (1 << 31)
 #define ADC_CR_ADVREGEN   (1 << 28)
 
+/* ---- I2C1 ---- */
+#define I2C1_BASE         0x40005400
+#define I2C1_CR1          (*(volatile uint32_t *)(I2C1_BASE + 0x00))
+#define I2C1_CR2          (*(volatile uint32_t *)(I2C1_BASE + 0x04))
+#define I2C1_TIMINGR      (*(volatile uint32_t *)(I2C1_BASE + 0x10))
+#define I2C1_ISR          (*(volatile uint32_t *)(I2C1_BASE + 0x18))
+#define I2C1_ICR          (*(volatile uint32_t *)(I2C1_BASE + 0x1C))
+#define I2C1_RXDR         (*(volatile uint32_t *)(I2C1_BASE + 0x24))
+#define I2C1_TXDR         (*(volatile uint32_t *)(I2C1_BASE + 0x28))
+
+/* I2C ISR bits */
+#define I2C_ISR_TXE       (1 << 0)
+#define I2C_ISR_TXIS      (1 << 1)
+#define I2C_ISR_RXNE      (1 << 2)
+#define I2C_ISR_NACKF     (1 << 4)
+#define I2C_ISR_STOPF     (1 << 5)
+#define I2C_ISR_TC        (1 << 6)
+#define I2C_ISR_BUSY      (1 << 15)
+
+/* I2C ICR bits */
+#define I2C_ICR_NACKCF    (1 << 4)
+#define I2C_ICR_STOPCF    (1 << 5)
+
+/* I2C CR2 bits */
+#define I2C_CR2_START     (1 << 13)
+#define I2C_CR2_STOP      (1 << 14)
+#define I2C_CR2_NACK      (1 << 15)
+#define I2C_CR2_RD_WRN    (1 << 10)
+#define I2C_CR2_AUTOEND   (1 << 25)
+
 #endif /* STM32U0_H */

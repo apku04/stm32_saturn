@@ -21,6 +21,7 @@
 #include "terminal.h"
 #include "hal.h"
 #include "adc.h"
+#include "ina219.h"
 
 /* ---- Globals ---- */
 static uint16_t seq = 0;
@@ -100,11 +101,16 @@ static void beaconHandler(void) {
             pkt.control_app = BEACON;
             pkt.sequence_num = seq;
 
-            /* Include battery voltage (mV) as 2-byte LE payload */
+            /* Beacon payload: bat_mv(2) + solar_mv(2) + charge_status(1) */
             uint16_t bat_mv = adc_read_battery_mv();
+            uint16_t sol_mv = ina219_read_bus_mv();
+            uint8_t  chg    = (uint8_t)charge_get_status();
             pkt.data[0] = (uint8_t)(bat_mv & 0xFF);
             pkt.data[1] = (uint8_t)(bat_mv >> 8);
-            pkt.length = 4 + 2;  /* header + 2 bytes battery */
+            pkt.data[2] = (uint8_t)(sol_mv & 0xFF);
+            pkt.data[3] = (uint8_t)(sol_mv >> 8);
+            pkt.data[4] = chg;
+            pkt.length = 4 + 5;  /* header + 5 bytes telemetry */
 
             write_packet(&pTxBuf, &pkt);
         }
@@ -203,6 +209,7 @@ void Reset_Handler(void) {
     timer_init();
     spi_init();
     adc_init();
+    ina219_init();
     usb_cdc_init();
     usb_cdc_set_rx_callback(usb_rx_handler);
 

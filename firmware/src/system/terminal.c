@@ -17,6 +17,7 @@
 #include "flash_config.h"
 #include "packetBuffer.h"
 #include "adc.h"
+#include "ina219.h"
 
 uint8_t sniffer = 0;
 
@@ -124,7 +125,7 @@ static void help_command(void) {
           "  version\n"
           "  reset\n"
           "  dfu - Enter USB DFU bootloader\n"
-          "Params: frequency, data_rate, tx_power, mac_address, flash, routing, battery\n");
+          "Params: frequency, data_rate, tx_power, mac_address, flash, routing, battery, solar, charge\n");
 }
 
 static uint8_t set_commands(uint16_t argc, uint8_t *argv[]) {
@@ -227,6 +228,14 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         uint16_t raw = adc_read_battery_raw();
         uint32_t mv = ((uint32_t)raw * 6600UL) / 4096UL;
         snprintf(buf, sizeof(buf), "Battery: %lu mV (raw: %u)\n", (unsigned long)mv, raw);
+        print(buf);
+    } else if (strcmp((const char *)argv[1], "solar") == 0) {
+        uint16_t mv = ina219_read_bus_mv();
+        snprintf(buf, sizeof(buf), "Solar: %u mV\n", mv);
+        print(buf);
+    } else if (strcmp((const char *)argv[1], "charge") == 0) {
+        ChargeStatus s = charge_get_status();
+        snprintf(buf, sizeof(buf), "Charge: %s\n", charge_status_str(s));
         print(buf);
     }
 }
