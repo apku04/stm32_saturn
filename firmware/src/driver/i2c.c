@@ -2,7 +2,7 @@
  * i2c.c — I2C1 & I2C2 master driver for STM32U073
  *
  * I2C1: PB8 = SCL (AF4), PB9 = SDA (AF4)
- * I2C2: PB13 = SCL (AF6), PB14 = SDA (AF6) — INA219
+ * I2C2: PB8 = SCL (AF6), PB9 = SDA (AF6) — INA219
  * Clock: HSI16 (16 MHz), 100 kHz standard mode
  */
 
@@ -201,7 +201,7 @@ int i2c_write_reg(uint8_t addr, uint8_t reg, uint16_t val)
 int i2c_read_reg(uint8_t addr, uint8_t reg, uint16_t *val)
 { return i2c_read_reg_impl(I2C1_BASE, addr, reg, val); }
 
-/* ---- I2C2 public API (PB13/PB14, AF6) ---- */
+/* ---- I2C2 public API (PB8/PB9, AF6) ---- */
 
 void i2c2_init(void)
 {
@@ -212,25 +212,25 @@ void i2c2_init(void)
     RCC_APBENR1 |= (1 << 22);
     for (volatile int i = 0; i < 10; i++) __asm__("nop");
 
-    /* Configure PB13, PB14 as AF6 open-drain */
+    /* Configure PB8, PB9 as AF6 open-drain */
     uint32_t m = GPIO_MODER(GPIOB_BASE);
-    m &= ~((3 << (I2C2_SCL_PIN * 2)) | (3 << (I2C2_SDA_PIN * 2)));
-    m |=  ((2 << (I2C2_SCL_PIN * 2)) | (2 << (I2C2_SDA_PIN * 2)));
+    m &= ~((3 << (INA_SCL_PIN * 2)) | (3 << (INA_SDA_PIN * 2)));
+    m |=  ((2 << (INA_SCL_PIN * 2)) | (2 << (INA_SDA_PIN * 2)));
     GPIO_MODER(GPIOB_BASE) = m;
 
     /* Open-drain */
-    GPIO_OTYPER(GPIOB_BASE) |= (1 << I2C2_SCL_PIN) | (1 << I2C2_SDA_PIN);
+    GPIO_OTYPER(GPIOB_BASE) |= (1 << INA_SCL_PIN) | (1 << INA_SDA_PIN);
 
     /* Pull-ups */
     uint32_t p = GPIO_PUPDR(GPIOB_BASE);
-    p &= ~((3 << (I2C2_SCL_PIN * 2)) | (3 << (I2C2_SDA_PIN * 2)));
-    p |=  ((1 << (I2C2_SCL_PIN * 2)) | (1 << (I2C2_SDA_PIN * 2)));
+    p &= ~((3 << (INA_SCL_PIN * 2)) | (3 << (INA_SDA_PIN * 2)));
+    p |=  ((1 << (INA_SCL_PIN * 2)) | (1 << (INA_SDA_PIN * 2)));
     GPIO_PUPDR(GPIOB_BASE) = p;
 
-    /* AF6 for PB13, PB14 (AFRH register, pins 8-15) */
+    /* AF6 for PB8, PB9 (AFRH register, pins 8-15): bits [3:0]=6, [7:4]=6 */
     uint32_t afrh = GPIO_AFRH(GPIOB_BASE);
-    afrh &= ~((0xF << ((I2C2_SCL_PIN - 8) * 4)) | (0xF << ((I2C2_SDA_PIN - 8) * 4)));
-    afrh |=  ((6 << ((I2C2_SCL_PIN - 8) * 4)) | (6 << ((I2C2_SDA_PIN - 8) * 4)));
+    afrh &= ~((0xF << ((INA_SCL_PIN - 8) * 4)) | (0xF << ((INA_SDA_PIN - 8) * 4)));
+    afrh |=  ((6 << ((INA_SCL_PIN - 8) * 4)) | (6 << ((INA_SDA_PIN - 8) * 4)));
     GPIO_AFRH(GPIOB_BASE) = afrh;
 
     /* Disable I2C2 before configuration */

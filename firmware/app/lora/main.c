@@ -39,10 +39,10 @@ static void app_outgoing(Packet *pkt, PacketBuffer *txbuf);
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf);
 static void usb_rx_handler(uint8_t *data, uint16_t len);
 
-/* ---- LED helpers (PB13/PB14 reassigned to I2C2 for INA219) ---- */
-void led1_toggle(void) { /* disabled — pin used by I2C2 */ }
-static void led2_toggle(void) { /* disabled — pin used by I2C2 */ }
-static void led1_on(void) { /* disabled — pin used by I2C2 */ }
+/* ---- LED helpers (PB13 = LED1, PB14 = LED2, active high) ---- */
+void led1_toggle(void) { GPIO_ODR(GPIOB_BASE) ^= (1 << LED1_PIN); }
+static void led2_toggle(void) { GPIO_ODR(GPIOB_BASE) ^= (1 << LED2_PIN); }
+static void led1_on(void) { GPIO_BSRR(GPIOB_BASE) = (1 << LED1_PIN); }
 
 /* ---- Clock: HSI16 as SYSCLK, HSI48 for USB ---- */
 static void clock_init(void) {
@@ -56,9 +56,13 @@ static void clock_init(void) {
     while ((RCC_CFGR & (7U << 3)) != (1U << 3));
 }
 
-/* ---- LED GPIO init (PB13/PB14 now used by I2C2 — skip) ---- */
+/* ---- LED GPIO init (PB13 = LED1, PB14 = LED2, push-pull output) ---- */
 static void led_init(void) {
-    /* LEDs disabled: PB13/PB14 reassigned to I2C2 for INA219 */
+    RCC_IOPENR |= (1 << 1);  /* GPIOB clock */
+    uint32_t m = GPIO_MODER(GPIOB_BASE);
+    m &= ~((3 << (LED1_PIN * 2)) | (3 << (LED2_PIN * 2)));
+    m |=  ((1 << (LED1_PIN * 2)) | (1 << (LED2_PIN * 2)));  /* output */
+    GPIO_MODER(GPIOB_BASE) = m;
 }
 
 /* ---- General GPIO for radio, etc. ---- */

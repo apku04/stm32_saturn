@@ -66,12 +66,12 @@
 #define I2C_SDA_PORT   GPIOB
 #define I2C_SDA_PIN    7    /* PB7  — I2C1_SDA (AF4) */
 
-/* ---- I2C1 (INA219 on PB8/PB9, AF4) ---- */
+/* ---- I2C2 (INA219 on PB8/PB9, AF6) ---- */
 #define INA_SCL_PORT   GPIOB
-#define INA_SCL_PIN    8    /* PB8  — I2C1_SCL (AF4) */
+#define INA_SCL_PIN    8    /* PB8  — I2C2_SCL (AF6) */
 
 #define INA_SDA_PORT   GPIOB
-#define INA_SDA_PIN    9    /* PB9  — I2C1_SDA (AF4) */
+#define INA_SDA_PIN    9    /* PB9  — I2C2_SDA (AF6) */
 
 /* ---- USB (DRD FS) ---- */
 #define USB_DM_PORT    GPIOA
@@ -83,12 +83,12 @@
 #define USB_VSENSE_PORT GPIOA
 #define USB_VSENSE_PIN  9   /* PA9  — VBUS sense (analog/input) */
 
-/* ---- I2C2 (INA219 current sensor on PB13/PB14, AF6) ---- */
-#define I2C2_SCL_PORT  GPIOB
-#define I2C2_SCL_PIN   13   /* PB13 — I2C2_SCL (AF6) */
+/* ---- LEDs (active high, 470 Ω series) ---- */
+#define LED1_PORT      GPIOB
+#define LED1_PIN       13   /* PB13 — LED1 */
 
-#define I2C2_SDA_PORT  GPIOB
-#define I2C2_SDA_PIN   14   /* PB14 — I2C2_SDA (AF6) */
+#define LED2_PORT      GPIOB
+#define LED2_PIN       14   /* PB14 — LED2 */
 
 /* ---- Battery / power ---- */
 #define BAT_SENSE_PORT GPIOB
