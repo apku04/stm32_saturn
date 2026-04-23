@@ -18,6 +18,7 @@
 #include "packetBuffer.h"
 #include "adc.h"
 #include "ina219.h"
+#include "i2c.h"
 
 uint8_t sniffer = 0;
 
@@ -237,6 +238,16 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         ChargeStatus s = charge_get_status();
         snprintf(buf, sizeof(buf), "Charge: %s\n", charge_status_str(s));
         print(buf);
+    } else if (strcmp((const char *)argv[1], "i2cscan") == 0) {
+        print("Scanning I2C2 (0x08-0x77)...\n");
+        for (uint8_t a = 0x08; a <= 0x77; a++) {
+            uint8_t dummy;
+            if (i2c_read(a, &dummy, 1) == 0) {
+                snprintf(buf, sizeof(buf), "  Found: 0x%02X\n", a);
+                print(buf);
+            }
+        }
+        print("Done\n");
     }
 }
 

@@ -1,5 +1,5 @@
 /*
- * i2c.h — I2C1 master driver for STM32U073
+ * i2c.h — I2C2 master driver for STM32U073 (INA219 on PB8/PB9)
  */
 
 #ifndef I2C_H

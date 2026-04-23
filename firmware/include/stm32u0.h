@@ -228,6 +228,16 @@
 #define I2C1_RXDR         (*(volatile uint32_t *)(I2C1_BASE + 0x24))
 #define I2C1_TXDR         (*(volatile uint32_t *)(I2C1_BASE + 0x28))
 
+/* ---- I2C2 ---- */
+#define I2C2_BASE         0x40005800
+#define I2C2_CR1          (*(volatile uint32_t *)(I2C2_BASE + 0x00))
+#define I2C2_CR2          (*(volatile uint32_t *)(I2C2_BASE + 0x04))
+#define I2C2_TIMINGR      (*(volatile uint32_t *)(I2C2_BASE + 0x10))
+#define I2C2_ISR          (*(volatile uint32_t *)(I2C2_BASE + 0x18))
+#define I2C2_ICR          (*(volatile uint32_t *)(I2C2_BASE + 0x1C))
+#define I2C2_RXDR         (*(volatile uint32_t *)(I2C2_BASE + 0x24))
+#define I2C2_TXDR         (*(volatile uint32_t *)(I2C2_BASE + 0x28))
+
 /* I2C ISR bits */
 #define I2C_ISR_TXE       (1 << 0)
 #define I2C_ISR_TXIS      (1 << 1)

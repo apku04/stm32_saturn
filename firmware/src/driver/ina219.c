@@ -1,7 +1,7 @@
 /*
  * ina219.c — INA219 bus voltage reading + charger status GPIOs
  *
- * INA219 on I2C1 at address 0x40 (A0=A1=GND).
+ * INA219 on I2C2 at address 0x40 (A0=A1=GND), PB8=SCL, PB9=SDA.
  * Bus voltage register (0x02): bits [15:3] = voltage, LSB = 4 mV.
  *
  * Charge status (TP4056-style):
