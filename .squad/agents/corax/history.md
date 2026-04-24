@@ -11,3 +11,4 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 
 ## Learnings
 
+- 2026-04-24: Wrote `linux-serial-hygiene` skill — `stty -F /dev/ttyACMn 115200 raw -echo` is mandatory before raw cat/echo on STM32 CDC ports; cooked-mode echo caused real `unknown cmd: T` spam on the receiver. pyserial (lora_monitor.py) is unaffected.

@@ -91,3 +91,10 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - **No battery ADC on this MCU package:** PB4 has no ADC channel. Battery voltage is currently proxied through INA bus voltage. Future bodge wire candidates: PB1 (ex-DIO2) or PA8 (ex-BAT_STDBY).
 - **Flash workflow:** App command `dfu` jumps to bootloader; `dfu-util -a 0 -s 0x08000000:leave -D <bin>` flashes and re-launches. The `Error during download get_status` message after `Submitting leave request...` is benign — it's the `:leave` triggering the app jump before dfu-util finishes its status poll.
 - **Linux serial discipline:** Always `stty -F /dev/ttyACMn 115200 raw -echo` before reading/writing. Cooked-mode echo creates a feedback loop that drowns the terminal in `unknown cmd: T` errors.
+
+### 2026-04-24 — Skills extracted
+
+Authored three reusable skills under `.squad/skills/` for future agents:
+- `stm32-dfu-flash/SKILL.md` — USB DFU flash workflow, benign `get_status` error, SWD disabled
+- `stm32u073-i2c-pin-mux/SKILL.md` — I2C1-only, PB6/7 vs PB8/9 AF4 exclusivity, PA15 sense-LDO gating
+- `ina219-driver-patterns/SKILL.md` — R58=50mΩ shunt, µV reads, bus-V as battery proxy
