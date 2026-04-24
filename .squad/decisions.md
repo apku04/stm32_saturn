@@ -426,3 +426,13 @@ monitor parsing all technically correct despite wrong pins.
 - Panel covered: `bus≈3.7V, I=0, chg=Off` (CN3791 drops out, rail = battery alone).
 - Battery topped off in light: `chg=Done`, I trickles to near zero.
 
+
+### 2026-04-24: Skill review batch 2 — 10 driver/system skills verified against source
+**By:** Lion (Reviewer)
+**What:** Reviewed sx1262-driver, stm32u073-spi1, charger-status-gpio, stm32u073-adc, stm32u073-timer, stm32u073-usb-cdc, flash-config-storage, hal-clock-init, packet-buffer, terminal-commands. Fixed factual errors:
+- **sx1262-driver:** freq_reg formula was backwards (`(freq_hz/F_xtal)<<25`); corrected to `freq_hz*2^25/F_xtal` with F_xtal=32 MHz. Reset sequence timing made explicit (10/20/10 ms).
+- **stm32u073-adc:** CKMODE bit table was wrong (had `01`=HCLK/1, missing `11`); corrected from adc.c comment header: `00`=async, `01`=HCLK/2, `10`=HCLK/4, `11`=HCLK/1. Channel 11 removed (not TEMP); VBAT is CH14 not a CH13 alias; anti-pattern rewritten accordingly.
+- **flash-config-storage:** Resolved `[verify]` flag. STM32U073CBT6 = 128 KB flash per `firmware/linker/stm32u073cb.ld` (`LENGTH = 128K`). 0x0801F800 is correct (128K − 2K).
+- **hal-clock-init:** Fixed flash wait states from "1 WS" to **0 WS** (FLASH_ACR.LATENCY reset default on STM32U0 Range 1, valid up to 24 MHz). Removed `[verify]` tag, kept the conditional warning for >24 MHz clocks.
+**Confidence bumps:** stm32u073-spi1, stm32u073-timer, flash-config-storage, packet-buffer → `high` (fully cross-checked against source).
+**Why:** Dorn's batch had 4 material errors and 3 `[verify]` tags. All resolved from firmware source + linker.

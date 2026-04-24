@@ -98,3 +98,18 @@ Authored three reusable skills under `.squad/skills/` for future agents:
 - `stm32-dfu-flash/SKILL.md` — USB DFU flash workflow, benign `get_status` error, SWD disabled
 - `stm32u073-i2c-pin-mux/SKILL.md` — I2C1-only, PB6/7 vs PB8/9 AF4 exclusivity, PA15 sense-LDO gating
 - `ina219-driver-patterns/SKILL.md` — R58=50mΩ shunt, µV reads, bus-V as battery proxy
+
+## Learnings — 2026-04-24 (driver & system skill extraction)
+
+- `sx1262-driver/SKILL.md` — SPI command protocol, TCXO-then-calibrate init order, BUSY-before-every-command discipline, IRQ poll model, key reg addrs 0x0740/0x08AC
+- `stm32u073-spi1/SKILL.md` — PA4-7 AF5, software NSS, /8 prescaler → 2MHz, mode 0 for SX1262, u8-cast DR to avoid 4-byte FIFO gulps
+- `charger-status-gpio/SKILL.md` — CN3791 PA10 CHRG / PA8 STDBY active-low, 4-state truth table, PA15 LDO gating required before read
+- `stm32u073-adc/SKILL.md` — PB4 has no ADC, CH13 VREFINT vs VBAT/3 conflict, CKMODE=01 sync (not async), battery proxied via INA219 bus-V
+- `stm32u073-timer/SKILL.md` — SysTick polled (no ISR), 1ms RVR=15999, TICKINT=0, COUNTFLAG read-to-clear, 10s beacon cb single slot
+- `stm32u073-usb-cdc/SKILL.md` — PA11/12 AF10, HSI48+CRS+`PWR_CR2.USV`, 4-EP CDC, DFU coexist via DPPU clear + FRES+PDWN + SYSCFG MEM_MODE=01
+- `flash-config-storage/SKILL.md` — last page 0x0801F800, 2KB page size (U0 not L0), 64-bit doubleword mandatory, erase-before-write, 1 byte per 8-byte slot
+- `hal-clock-init/SKILL.md` — HSI16 SYSCLK, no PLL, per-app main.c owns clock_init, nop-spin after RCC enables, `PWR_CR2.USV` for USB
+- `packet-buffer/SKILL.md` — fixed 10 slots, polled single-thread no-locks, `search_pending_packet` copy-and-clear as layer-handoff pattern, drops on full
+- `terminal-commands/SKILL.md` — argv parsing via in-place NUL, get/set/send/dfu dispatch, `get solar` production format, DO NOT change `[RX]`/`[BEACON]`/`Solar:` prefixes (test suite parses them)
+
+None of the 10 skills were skipped — all modules warranted their own reusable notes. One `[verify]` flag in `flash-config-storage` on the 64 KB vs 128 KB flash size discrepancy between charter and flash_config.c.
