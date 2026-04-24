@@ -81,3 +81,13 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - Board 2: node_addr=33 ✅
 - Both boards now distinguish in radio traffic
 - Stable across resets (factory-programmed)
+
+## Learnings — 2026-04-24 (solar telemetry bring-up)
+
+- **I²C peripheral inventory:** Only I2C1 is wired. The driver is misleadingly named `i2c2_*`. Two AF4-mappable pin pairs share it as a hardware mutex: PB6/PB7 (H4 external) and PB8/PB9 (U10 onboard INA219). Never enable both — the AF mux is exclusive and a dual-config bricks the bus.
+- **U10 power gate:** PA15 (SENSE_LDO_EN) controls the VCC_SENSE LDO that powers U10. Must be driven HIGH before any I²C activity, with ~1ms soft-start. Skipping this makes U10 silent on the bus and looks like a dead chip / bad solder.
+- **INA219 R58 = 50 mΩ** (NOT the 100 mΩ that's typical for breakout boards). With the default config (LSB = 10 µV), 1 shunt LSB = 200 µA and the useful range needs µV resolution. `ina219_read_shunt_mv()` truncates to zero for typical charge currents — use `ina219_read_shunt_uv()` for any current calculation. I[mA] = V_shunt[µV] / 50.
+- **Charge status GPIOs:** PA10 = CHRG (CN3791), PA8 = STDBY. Configure as inputs with pull-ups during INA init. `charge_get_status()` returns Off/Charging/Done/Fault.
+- **No battery ADC on this MCU package:** PB4 has no ADC channel. Battery voltage is currently proxied through INA bus voltage. Future bodge wire candidates: PB1 (ex-DIO2) or PA8 (ex-BAT_STDBY).
+- **Flash workflow:** App command `dfu` jumps to bootloader; `dfu-util -a 0 -s 0x08000000:leave -D <bin>` flashes and re-launches. The `Error during download get_status` message after `Submitting leave request...` is benign — it's the `:leave` triggering the app jump before dfu-util finishes its status poll.
+- **Linux serial discipline:** Always `stty -F /dev/ttyACMn 115200 raw -echo` before reading/writing. Cooked-mode echo creates a feedback loop that drowns the terminal in `unknown cmd: T` errors.

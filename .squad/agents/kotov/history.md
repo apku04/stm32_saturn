@@ -87,3 +87,5 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - INA219 pull-ups R40/R41 (4.7kΩ) on main VCC confirmed working
 - INA219 SOIC-8 D-package: Pin1=A1, Pin2=A0, Pin3=SDA, Pin4=SCL, Pin5=VS, Pin6=GND, Pin7=VIN-, Pin8=VIN+
 - A0=A1=GND → address 0x40 confirmed
+
+2026-04-24: See decisions.md entry "Saturn board hardware & workflow facts" — covers I²C mux exclusivity, U10 INA219 init/scaling, DFU flash workflow, beacon v3 payload.

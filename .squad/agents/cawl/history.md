@@ -70,3 +70,5 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - Hardware investigation: verify INA219 population/solder joints if no ACK at 0x40
 - Future PCB: route BAT_SENSE to PB1 (sacrifice DIO2, poll via SPI instead) or similar ADC-capable pin
 
+
+2026-04-24: See decisions.md entry "Saturn board hardware & workflow facts" — covers I²C mux exclusivity, U10 INA219 init/scaling, DFU flash workflow, beacon v3 payload.

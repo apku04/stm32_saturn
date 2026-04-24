@@ -364,3 +364,65 @@ monitor parsing all technically correct despite wrong pins.
 - **2025-07-18** — Cawl: Pin correction applied
 - **2026-04-23** — Scribe: Consolidated battery ADC investigation, archived inbox decisions (9 new entries)
 - **2026-04-23T19:43Z** — Scribe: Unique source address via STM32 UID documented
+### 2026-04-24: Saturn board hardware & workflow facts (session capture)
+
+**By:** Brady (via Copilot)
+**Why:** Lessons from a long bring-up session on the solar telemetry path. Future agents must know these facts before touching I²C, INA219, the flash workflow, or the beacon payload.
+
+#### Flashing over USB DFU (no SWD needed)
+- App jumps to bootloader via the terminal command `dfu` over the USB CDC ACM port.
+- Standard reflash recipe (run from `firmware/`):
+  ```
+  printf 'dfu\r\n' > /dev/ttyACM0; sleep 2
+  sudo dfu-util -a 0 -s 0x08000000:leave -D app/lora/lora.bin
+  ```
+- The trailing `dfu-util: Error during download get_status` is BENIGN — the `:leave` suffix triggers a jump to the freshly written app and the device drops off USB before dfu-util can poll status. Flash actually succeeded if you see `File downloaded successfully` above it.
+- After flashing, the CDC port re-enumerates as `/dev/ttyACMn`. With two boards plugged in they appear as ACM0 and ACM1.
+
+#### Linux serial gotcha — TTY cooked mode echo loop
+- A Linux TTY in cooked mode will echo received characters back to the device, which the firmware's terminal then tries to parse as commands → endless `Error: unknown cmd: T` spam.
+- ALWAYS configure the port raw before reading/writing:
+  ```
+  stty -F /dev/ttyACM0 115200 raw -echo
+  ```
+- Without this, monitoring the receiver looks "broken" but is actually a self-inflicted feedback loop.
+
+#### I²C peripheral & pin mux (CRITICAL — easy to miss)
+- The STM32U073 has only **I2C1** populated on this board — there is no separate "I2C2" peripheral despite the `i2c2_*` naming in the driver.
+- Two pin pairs both AF4-map to I2C1:
+  - **PB6/PB7** → connector H4 (external sensor header)
+  - **PB8/PB9** → onboard U10 INA219
+- The AF mux is **exclusive**: only ONE pair can be active at a time. Enabling both kills the bus for both. If you need to talk to a sensor on H4, you must reconfigure i2c2_init() to PB6/PB7 (and U10 becomes unreachable until you switch back).
+
+#### U10 INA219 (solar/charge monitor)
+- Address: `0x40` (A0=A1=GND).
+- Power: VCC_SENSE rail, gated by **PA15 = SENSE_LDO_EN**. PA15 must be driven HIGH and given ~1ms before any I²C activity, otherwise the part is unpowered and you get NACK / scan reports nothing.
+- Init order in `ina219_init()`: drive PA15 high → wait → configure charge-status GPIOs (PA10=CHRG, PA8=STDBY, both inputs with pull-ups) → call `i2c2_init()` → soft-reset INA via writing 0x8000 → write config 0x399F (32V range, ±320mV PGA, 12-bit, continuous) → wait for first conversion.
+- Default config 0x399F gives a shunt LSB of **10 µV**.
+- **Shunt resistor R58 = 50 mΩ ±1%** (thin-film, 250 mW). Therefore:
+  - I[mA] = V_shunt[µV] / 50
+  - 1 LSB of the shunt register = 200 µA of current
+  - Don't use a `_mv()` API to derive current — at 50 mΩ the truncation to mV throws away the entire useful range. Use `ina219_read_shunt_uv()` (returns int32 µV at full 10 µV resolution).
+- Bus voltage register: bits[15:3], LSB = 4 mV.
+
+#### Solar polarity rule
+- A reversed solar panel at the board input shows `bus_mv ≈ 0` while a multimeter at the panel still reads the open-circuit voltage. Always verify polarity at the board before chasing chip-level theories (we wasted time suspecting blown ESD clamps that were perfectly fine).
+
+#### Beacon telemetry payload (current format — v3)
+- 7 bytes after the standard packet header + mesh table, in this order:
+  - `i_ma` (int16, LE) — current already in mA, computed at source so receivers don't need to know R58
+  - `bus_mv` (uint16, LE) — bus voltage at U10
+  - `bat_mv` (uint16, LE) — currently a copy of `bus_mv` because PB4 has no ADC on STM32U073 (no usable battery sense yet)
+  - `chg` (uint8) — charge status: 0=Off, 1=Charging, 2=Done, 3=Fault
+- Receiver prints `[BEACON] i_ma=<n> bus=<n> bat=<n> chg=<n> entries=<n>`.
+- The Python monitor `tools/lora_monitor.py` parses v3 (i_ma) directly and falls back to v2 (shunt mV → ×20 conversion).
+
+#### Battery sense — open work
+- ADC battery sense via PB4 is NOT available on STM32U073 (no ADC channel on that pin). Until a bodge wire is added (candidates: PB1 ex-DIO2, PA8 ex-BAT_STDBY), the firmware reports the bus voltage as the battery proxy.
+
+#### Verified known-good reading (sanity check baseline)
+- Under partial sun, charging: `bus≈5.45V, I≈8 mA, P≈43 mW, chg=Charging`.
+- Full sun: `bus≈6.4V, I≈186 mA, P≈1.2 W, chg=Charging`.
+- Panel covered: `bus≈3.7V, I=0, chg=Off` (CN3791 drops out, rail = battery alone).
+- Battery topped off in light: `chg=Done`, I trickles to near zero.
+
