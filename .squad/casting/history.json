@@ -6,6 +6,23 @@
       "universe": "warhammer40k",
       "created_at": "2026-04-23",
       "agents": ["Cawl","Kotov","Mkoll","Yarrick","Ravenor","Eisenhorn","Brostin"]
+    },
+    {
+      "assignment_id": "saturn-lora-tracker-recast-primarchs-2026-04-24",
+      "universe": "warhammer40k",
+      "created_at": "2026-04-24",
+      "event": "recast",
+      "rationale": "User-requested rename to Warhammer 40K Primarch names",
+      "mapping": {
+        "Cawl": "Guilliman",
+        "Kotov": "Ferrus",
+        "Mkoll": "Corax",
+        "Yarrick": "Dorn",
+        "Ravenor": "Khan",
+        "Eisenhorn": "Lion",
+        "Brostin": "Russ"
+      },
+      "agents": ["Guilliman","Ferrus","Corax","Dorn","Khan","Lion","Russ"]
     }
   ]
 }

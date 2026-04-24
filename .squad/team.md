@@ -12,13 +12,13 @@
 
 | Name | Role | Charter | Status |
 |------|------|---------|--------|
-| Cawl | Architect | .squad/agents/cawl/charter.md | active |
-| Kotov | PCB Expert | .squad/agents/kotov/charter.md | active |
-| Mkoll | RPi GPIO Expert | .squad/agents/mkoll/charter.md | active |
-| Yarrick | STM32 Expert | .squad/agents/yarrick/charter.md | active |
-| Ravenor | LoRa Expert | .squad/agents/ravenor/charter.md | active |
-| Eisenhorn | Reviewer | .squad/agents/eisenhorn/charter.md | active |
-| Brostin | Tester | .squad/agents/brostin/charter.md | active |
+| Guilliman | Architect | .squad/agents/guilliman/charter.md | active |
+| Ferrus | PCB Expert | .squad/agents/ferrus/charter.md | active |
+| Corax | RPi GPIO Expert | .squad/agents/corax/charter.md | active |
+| Dorn | STM32 Expert | .squad/agents/dorn/charter.md | active |
+| Khan | LoRa Expert | .squad/agents/khan/charter.md | active |
+| Lion | Reviewer | .squad/agents/lion/charter.md | active |
+| Russ | Tester | .squad/agents/russ/charter.md | active |
 | Scribe | Scribe | .squad/agents/scribe/charter.md | active |
 | Ralph | Work Monitor | — | active |
 

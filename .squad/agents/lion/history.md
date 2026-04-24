@@ -1,4 +1,4 @@
-# Eisenhorn — History
+# Lion — History
 
 ## Project Context
 
