@@ -231,18 +231,52 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         snprintf(buf, sizeof(buf), "Battery: %lu mV (raw: %u)\n", (unsigned long)mv, raw);
         print(buf);
     } else if (strcmp((const char *)argv[1], "solar") == 0) {
-        uint16_t mv = ina219_read_bus_mv();
-        snprintf(buf, sizeof(buf), "Solar: %u mV\n", mv);
+        /* Full solar/charger readout from U10 INA219.
+         * Shunt R = 0.05 Ω (R58, 50mΩ ±1%) → I[mA] = V_shunt[µV] / 50 */
+        uint16_t bus_mv  = ina219_read_bus_mv();
+        int32_t  sh_uv   = ina219_read_shunt_uv();
+        int32_t  i_ma    = sh_uv / 50;
+        int32_t  p_mw    = ((int32_t)bus_mv * i_ma) / 1000;
+        ChargeStatus cs  = charge_get_status();
+        snprintf(buf, sizeof(buf),
+                 "Solar:  bus=%u mV  shunt=%ld µV  I=%ld mA  P=%ld mW  charge=%s\n",
+                 bus_mv, (long)sh_uv, (long)i_ma, (long)p_mw, charge_status_str(cs));
         print(buf);
     } else if (strcmp((const char *)argv[1], "charge") == 0) {
         ChargeStatus s = charge_get_status();
         snprintf(buf, sizeof(buf), "Charge: %s\n", charge_status_str(s));
         print(buf);
+    } else if (strcmp((const char *)argv[1], "vrefint") == 0) {
+        /* Read 4 samples; report each + average to expose any glitch */
+        uint16_t s[4];
+        uint32_t sum = 0;
+        for (int i = 0; i < 4; i++) { s[i] = adc_read_vrefint_raw(); sum += s[i]; }
+        uint16_t avg = (uint16_t)(sum / 4);
+        uint16_t vdda = adc_vdda_from_raw(avg);
+        uint16_t cal = *(volatile uint16_t *)0x1FFF6E68u;
+        snprintf(buf, sizeof(buf),
+                 "VREFINT raws: %u %u %u %u  avg=%u  CAL=%u  VDDA=%u mV\n",
+                 s[0], s[1], s[2], s[3], avg, cal, vdda);
+        print(buf);
+    } else if (strcmp((const char *)argv[1], "ina") == 0) {
+        /* Write config register and report I2C result */
+        int wret = i2c2_write_reg(0x40, 0x00, 0x399F);
+        snprintf(buf, sizeof(buf), "INA219 config write: %d\n", wret);
+        print(buf);
+        uint16_t raw_shunt = 0, raw_bus = 0;
+        int sr = i2c2_read_reg(0x40, 0x01, &raw_shunt);
+        int br = i2c2_read_reg(0x40, 0x02, &raw_bus);
+        snprintf(buf, sizeof(buf),
+                 "shunt reg: ret=%d raw=0x%04X (%d mV)\n"
+                 "bus   reg: ret=%d raw=0x%04X (%u mV)\n",
+                 sr, raw_shunt, (int16_t)raw_shunt / 100,
+                 br, raw_bus, (raw_bus >> 3) * 4);
+        print(buf);
     } else if (strcmp((const char *)argv[1], "i2cscan") == 0) {
         print("Scanning I2C2 (0x08-0x77)...\n");
         for (uint8_t a = 0x08; a <= 0x77; a++) {
             uint8_t dummy;
-            if (i2c_read(a, &dummy, 1) == 0) {
+            if (i2c2_read(a, &dummy, 1) == 0) {
                 snprintf(buf, sizeof(buf), "  Found: 0x%02X\n", a);
                 print(buf);
             }
@@ -261,6 +295,18 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         uint16_t bat = adc_read_battery_mv();
         uint16_t braw = adc_read_battery_raw();
         snprintf(buf, sizeof(buf), "bat_mv=%u (raw=%u)\n", bat, braw);
+        print(buf);
+    } else if (strcmp((const char *)argv[1], "i2cread") == 0 && argc >= 4) {
+        /* Usage: get i2cread <addr_hex> <reg_hex>
+         * Reads a 16-bit big-endian register from an arbitrary I2C device.
+         * Use to prove I2C read path with a known-good device on H4. */
+        uint8_t addr = (uint8_t)strtoul((const char *)argv[2], NULL, 16);
+        uint8_t reg  = (uint8_t)strtoul((const char *)argv[3], NULL, 16);
+        uint16_t val = 0;
+        int r = i2c2_read_reg(addr, reg, &val);
+        snprintf(buf, sizeof(buf),
+                 "i2c read  addr=0x%02X reg=0x%02X -> ret=%d val=0x%04X\n",
+                 addr, reg, r, val);
         print(buf);
     }
 }

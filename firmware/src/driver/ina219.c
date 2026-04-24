@@ -29,9 +29,20 @@
 
 void ina219_init(void)
 {
-    /* Enable GPIOA clock for charge status pins */
+    /* Enable GPIOA clock for charge status pins + SENSE_LDO_EN (PA15) */
     RCC_IOPENR |= (1 << 0);
     for (volatile int i = 0; i < 10; i++) __asm__("nop");
+
+    /* PA15 = SENSE_LDO_EN (TPS7A02 enable). Drive HIGH to power VCC_SENSE.
+     * Without this, R38/R39 (4.7k pull-ups to VCC_SENSE) act as pull-DOWNs
+     * against R40/R41 (4.7k pull-ups to VCC) and the I2C bus sits at ~VCC/2.
+     * Must be set BEFORE i2c2_init(). */
+    GPIO_MODER(GPIOA_BASE) &= ~(3u << (15 * 2));
+    GPIO_MODER(GPIOA_BASE) |=  (1u << (15 * 2));   /* output */
+    GPIO_OTYPER(GPIOA_BASE) &= ~(1u << 15);        /* push-pull */
+    GPIO_BSRR(GPIOA_BASE)    =  (1u << 15);        /* set HIGH */
+    /* LDO needs ~1ms soft-start + caps need to charge */
+    for (volatile int i = 0; i < 200000; i++) __asm__("nop");
 
     /* Configure PA10 (CHRG) as input with pull-up */
     GPIO_MODER(GPIOA_BASE) &= ~(3 << (BAT_CHRG_PIN * 2));   /* input */
@@ -50,8 +61,15 @@ void ina219_init(void)
     /* Init I2C2 (INA219 is on I2C2: PB13/PB14) */
     i2c2_init();
 
+    /* Soft-reset INA219 (bit 15 of CONFIG). Self-clears when complete. */
+    i2c2_write_reg(INA219_ADDR, INA219_REG_CONFIG, 0x8000);
+    for (volatile int i = 0; i < 100000; i++) __asm__("nop");
+
     /* Write default configuration to INA219 */
     i2c2_write_reg(INA219_ADDR, INA219_REG_CONFIG, INA219_CONFIG_DEFAULT);
+
+    /* Allow first conversion to complete (~1 ms at 12-bit, single sample) */
+    for (volatile int i = 0; i < 100000; i++) __asm__("nop");
 }
 
 int16_t ina219_read_shunt_mv(void)
@@ -64,6 +82,15 @@ int16_t ina219_read_shunt_mv(void)
      * shunt_mv = raw * 10 / 1000 = raw / 100 */
     int16_t shunt_mv = (int16_t)(((int32_t)(int16_t)raw * 10) / 1000);
     return shunt_mv;
+}
+
+int32_t ina219_read_shunt_uv(void)
+{
+    uint16_t raw = 0;
+    if (i2c2_read_reg(INA219_ADDR, INA219_REG_SHUNT_V, &raw) != 0)
+        return 0;
+    /* signed 16-bit, LSB = 10 µV */
+    return (int32_t)(int16_t)raw * 10;
 }
 
 uint16_t ina219_read_bus_mv(void)

@@ -15,7 +15,8 @@ typedef enum {
 } ChargeStatus;
 
 void          ina219_init(void);
-int16_t       ina219_read_shunt_mv(void);   /* shunt voltage in mV (signed) */
+int16_t       ina219_read_shunt_mv(void);   /* shunt voltage in mV (signed, coarse) */
+int32_t       ina219_read_shunt_uv(void);   /* shunt voltage in µV (signed, full INA219 resolution) */
 uint16_t      ina219_read_bus_mv(void);      /* bus (solar) voltage in mV */
 ChargeStatus  charge_get_status(void);
 const char   *charge_status_str(ChargeStatus s);

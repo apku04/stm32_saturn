@@ -90,15 +90,18 @@ static void beaconHandler(void) {
             pkt.control_app = BEACON;
             pkt.sequence_num = seq;
 
-            /* Beacon payload: shunt_mv(2) + bus_mv(2) + bat_mv(2) + charge_status(1) */
-            int16_t  shunt_mv = ina219_read_shunt_mv();
+            /* Beacon payload: i_ma(2, signed) + bus_mv(2) + bat_mv(2) + charge_status(1)
+             * Current is computed on the source so the receiver doesn't need to know
+             * the shunt resistor value. R58 = 50 mΩ → I[mA] = V_shunt[µV] / 50. */
+            int32_t  sh_uv    = ina219_read_shunt_uv();
+            int16_t  i_ma     = (int16_t)(sh_uv / 50);
             uint16_t bus_mv   = ina219_read_bus_mv();
             /* ADC bat sense not usable (PB4 has no ADC on STM32U073) —
                using INA219 bus voltage as battery proxy */
-            uint16_t bat_mv   = ina219_read_bus_mv();
+            uint16_t bat_mv   = bus_mv;
             uint8_t  chg      = (uint8_t)charge_get_status();
-            pkt.data[0] = (uint8_t)(shunt_mv & 0xFF);
-            pkt.data[1] = (uint8_t)((uint16_t)shunt_mv >> 8);
+            pkt.data[0] = (uint8_t)(i_ma & 0xFF);
+            pkt.data[1] = (uint8_t)((uint16_t)i_ma >> 8);
             pkt.data[2] = (uint8_t)(bus_mv & 0xFF);
             pkt.data[3] = (uint8_t)(bus_mv >> 8);
             pkt.data[4] = (uint8_t)(bat_mv & 0xFF);
@@ -152,13 +155,13 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
         uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
         uint8_t app_off = tbl_bytes;
         if (data_len >= app_off + 7) {
-            /* New format: shunt(2) + bus(2) + bat(2) + chg(1) */
-            int16_t  shunt = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
+            /* New format: i_ma(2,signed) + bus(2) + bat(2) + chg(1) */
+            int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
             uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
             uint16_t bat   = pkt->data[app_off+4] | ((uint16_t)pkt->data[app_off+5] << 8);
             uint8_t  chg   = pkt->data[app_off+6];
-            snprintf(buf, sizeof(buf), "[BEACON] shunt=%d bus=%u bat=%u chg=%u entries=%u\n",
-                     shunt, bus, bat, chg, pkt->mesh_tbl_entries);
+            snprintf(buf, sizeof(buf), "[BEACON] i_ma=%d bus=%u bat=%u chg=%u entries=%u\n",
+                     i_ma, bus, bat, chg, pkt->mesh_tbl_entries);
             print(buf);
         } else if (data_len >= app_off + 5) {
             /* Legacy: bat + sol + chg */
