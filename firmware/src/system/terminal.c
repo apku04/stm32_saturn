@@ -19,6 +19,7 @@
 #include "adc.h"
 #include "ina219.h"
 #include "i2c.h"
+#include "flash_ota.h"
 
 uint8_t sniffer = 0;
 
@@ -136,6 +137,50 @@ static uint8_t set_commands(uint16_t argc, uint8_t *argv[]) {
         writeFlash(&flash_data);
         print("Done\n");
         return 0;
+    }
+
+    /* --- OTA commands --- */
+    if (argc >= 2 && strcmp((const char *)argv[1], "ota") == 0) {
+        if (argc >= 3 && strcmp((const char *)argv[2], "erase") == 0) {
+            ota_err_t rc = ota_erase();
+            print(rc == OTA_OK ? "OTA Erase: OK\r\n" : "OTA Erase: FAIL\r\n");
+            return 0;
+        }
+        if (argc >= 5 && strcmp((const char *)argv[2], "write") == 0) {
+            uint32_t offset = strtoul((const char *)argv[3], NULL, 16);
+            const char *hex = (const char *)argv[4];
+            if (strlen(hex) != 16) {
+                print("OTA Write: FAIL err=-2\r\n");
+                return 1;
+            }
+            uint8_t data[8];
+            for (int i = 0; i < 8; i++) {
+                char tmp[3] = { hex[i*2], hex[i*2+1], '\0' };
+                data[i] = (uint8_t)strtoul(tmp, NULL, 16);
+            }
+            ota_err_t rc = ota_write(offset, data, 8);
+            if (rc == OTA_OK) {
+                print("OTA Write: OK\r\n");
+            } else {
+                char s[64];
+                snprintf(s, sizeof(s), "OTA Write: FAIL err=%d\r\n", (int)rc);
+                print(s);
+            }
+            return 0;
+        }
+        if (argc >= 4 && strcmp((const char *)argv[2], "pending") == 0) {
+            uint16_t sz = (uint16_t)strtoul((const char *)argv[3], NULL, 10);
+            ota_set_pending(sz);
+            print("OTA Pending: SET\r\n");
+            return 0;
+        }
+        if (argc >= 3 && strcmp((const char *)argv[2], "clear") == 0) {
+            ota_clear_pending();
+            print("OTA Pending: CLEARED\r\n");
+            return 0;
+        }
+        print("Unknown OTA set command\n");
+        return 1;
     }
 
     if (argc >= 3) {
@@ -296,6 +341,33 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         uint16_t braw = adc_read_battery_raw();
         snprintf(buf, sizeof(buf), "bat_mv=%u (raw=%u)\n", bat, braw);
         print(buf);
+    } else if (strcmp((const char *)argv[1], "ota") == 0) {
+        if (argc >= 3 && strcmp((const char *)argv[2], "bank") == 0) {
+            snprintf(buf, sizeof(buf), "OTA Bank: 0x%08lX size=%lu\r\n",
+                     (unsigned long)ota_bank_addr(), (unsigned long)ota_bank_size());
+            print(buf);
+        } else if (argc >= 5 && strcmp((const char *)argv[2], "read") == 0) {
+            uint32_t offset = strtoul((const char *)argv[3], NULL, 16);
+            uint32_t len = strtoul((const char *)argv[4], NULL, 10);
+            if (len > 16) len = 16;
+            uint8_t tmp[16];
+            ota_read(offset, tmp, len);
+            print("OTA Read:");
+            for (uint32_t i = 0; i < len; i++) {
+                char hx[4];
+                snprintf(hx, sizeof(hx), " %02X", tmp[i]);
+                print(hx);
+            }
+            print("\r\n");
+        } else if (argc >= 3 && strcmp((const char *)argv[2], "pending") == 0) {
+            uint16_t img_sz = 0;
+            if (ota_is_pending(&img_sz)) {
+                snprintf(buf, sizeof(buf), "OTA Pending: YES size=%u\r\n", img_sz);
+            } else {
+                snprintf(buf, sizeof(buf), "OTA Pending: NO\r\n");
+            }
+            print(buf);
+        }
     } else if (strcmp((const char *)argv[1], "i2cread") == 0 && argc >= 4) {
         /* Usage: get i2cread <addr_hex> <reg_hex>
          * Reads a 16-bit big-endian register from an arbitrary I2C device.

@@ -20,7 +20,8 @@ DRV_SRC = $(ROOT)/src/driver/usb_cdc.c $(ROOT)/src/driver/spi.c \
           $(ROOT)/src/driver/ina219.c
 PRO_SRC = $(ROOT)/src/protocol/maclayer.c $(ROOT)/src/protocol/networklayer.c
 SYS_SRC = $(ROOT)/src/system/packetBuffer.c $(ROOT)/src/system/terminal.c \
-          $(ROOT)/src/system/flash_config.c $(ROOT)/src/system/hal.c
+          $(ROOT)/src/system/flash_config.c $(ROOT)/src/system/flash_ota.c \
+          $(ROOT)/src/system/hal.c
 APP_SRC = main.c
 
 SRCS = $(APP_SRC) $(DRV_SRC) $(PRO_SRC) $(SYS_SRC)

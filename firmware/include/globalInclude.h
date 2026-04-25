@@ -29,7 +29,10 @@ typedef enum {
     RADIO_DR,
     RADIO_TX_PWR,
     PARAMETER_N,
-    FLASH_SIZE_PARAM
+    FLASH_SIZE_PARAM,
+    OTA_PENDING_FLAG,
+    OTA_IMAGE_SIZE_LO,
+    OTA_IMAGE_SIZE_HI
 } addrEnum;
 
 /* ---- Packet direction / ownership ---- */

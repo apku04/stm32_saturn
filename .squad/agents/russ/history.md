@@ -81,3 +81,35 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - Full suite: 32 passed / 3 failed — communication tests fail due to radio hardware not responding (separate from parser fix)
 
 **Remaining issue:** Radio intermittently non-functional. Both boards on identical config (868MHz, SF7, 14dBm), `send` returns Done, but receiver gets 0 bytes. Possible SX1262 RX mode issue after repeated DFU cycles, or antenna/proximity problem. Not a test code bug.
+
+### 2026-04-24 — OTA Flash Driver Test Commands & Pytest Suite
+
+**Task:** Add terminal commands and pytest tests for Dorn's `flash_ota.c` OTA bank driver.
+
+**Changes made:**
+
+1. **terminal.c** — Added 7 OTA commands following existing `get`/`set` dispatch pattern:
+   - `get ota bank` → reports bank address (0x08010000) and size (63488)
+   - `set ota erase` → erases 31 pages, reports OK/FAIL
+   - `set ota write <offset_hex> <hex_bytes>` → writes 8 bytes, validates 16 hex chars
+   - `get ota read <offset_hex> <len>` → reads up to 16 bytes, prints uppercase hex with spaces
+   - `get ota pending` / `set ota pending <size>` / `set ota clear` → pending flag lifecycle
+   - Added `#include "flash_ota.h"` (single include, no duplicates)
+
+2. **test_target_test.py** — Added `TestOTAFlash` class (7 test cases):
+   - `test_ota_bank_info` — verifies address and size constants
+   - `test_ota_erase` — erase with 10s timeout for 31-page operation
+   - `test_ota_write_and_read` — write 8 bytes at offset 0, readback verify
+   - `test_ota_write_at_offset` — write at non-zero offset (0x10)
+   - `test_ota_write_alignment_reject` — misaligned offset returns err=-2
+   - `test_ota_pending_lifecycle` — set/read/clear/read cycle
+   - `test_ota_full_roundtrip` — erase + 2 writes (16 bytes) + readback + bank addr verify
+   - Used `_read_until_idle()` for erase/read (slow ops), `send_command()` for fast ops
+
+**Build:** Clean (25520 bytes text, up from 22264). No new warnings.
+
+**Learnings:**
+- OTA erase of 31 pages can take several seconds on real hardware — tests use 10s timeout via `_read_until_idle`
+- `send_command()` raises on "Error" substring — OTA FAIL responses don't contain "Error" so they pass through safely
+- The `set ota write` hex parser uses a 2-char-at-a-time loop rather than strtoul on the whole string — avoids endianness confusion
+- `ota_clear_pending()` erases the entire config page and rewrites non-OTA slots — a slow operation that may need extra timeout in practice

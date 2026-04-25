@@ -229,6 +229,124 @@ class TestFlashStorage:
         assert "Done" in response
 
 
+class TestOTAFlash:
+    """OTA firmware bank flash tests"""
+
+    def test_ota_bank_info(self, serial_port):
+        """Verify OTA bank reports correct address and size"""
+        serial_port.reset_input_buffer()
+        serial_port.write(b'get ota bank\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        logging.info(f"\nOTA bank info: {response}")
+        assert "OTA Bank:" in response
+        assert "0x08010000" in response.upper()
+        assert "size=63488" in response
+
+    def test_ota_erase(self, serial_port):
+        """Erase the OTA bank and verify it succeeds"""
+        time.sleep(0.5)
+        serial_port.reset_input_buffer()
+        serial_port.write(b'set ota erase\r\n')
+        response = _read_until_idle(serial_port, timeout=10)
+        logging.info(f"\nOTA erase: {response}")
+        assert "OTA Erase: OK" in response
+
+    def test_ota_write_and_read(self, serial_port):
+        """Write 8 bytes to OTA bank and read them back"""
+        # Erase first to guarantee clean state
+        time.sleep(0.5)
+        serial_port.reset_input_buffer()
+        serial_port.write(b'set ota erase\r\n')
+        _read_until_idle(serial_port, timeout=10)
+
+        response = send_command(serial_port, 'set ota write 0000 DEADBEEF01020304')
+        assert "OTA Write: OK" in response
+
+        serial_port.reset_input_buffer()
+        serial_port.write(b'get ota read 0000 8\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        logging.info(f"\nOTA read: {response}")
+        assert "OTA Read:" in response
+        assert "DE AD BE EF 01 02 03 04" in response
+
+    def test_ota_write_at_offset(self, serial_port):
+        """Write 8 bytes at a non-zero offset (0x10)"""
+        response = send_command(serial_port, 'set ota write 0010 A5A5A5A5B6B6B6B6')
+        assert "OTA Write: OK" in response
+
+        serial_port.reset_input_buffer()
+        serial_port.write(b'get ota read 0010 8\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        logging.info(f"\nOTA read at offset 0x10: {response}")
+        assert "OTA Read:" in response
+        assert "A5 A5 A5 A5 B6 B6 B6 B6" in response
+
+    def test_ota_write_alignment_reject(self, serial_port):
+        """Misaligned write should return error"""
+        serial_port.reset_input_buffer()
+        serial_port.write(b'set ota write 0001 DEADBEEF01020304\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        logging.info(f"\nOTA misaligned write: {response}")
+        assert "OTA Write: FAIL" in response
+        assert "err=-2" in response
+
+    def test_ota_pending_lifecycle(self, serial_port):
+        """Set pending flag, verify it reads back, then clear it"""
+        # Set pending
+        response = send_command(serial_port, 'set ota pending 25000')
+        assert "OTA Pending: SET" in response
+
+        # Verify reads back
+        serial_port.reset_input_buffer()
+        serial_port.write(b'get ota pending\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        logging.info(f"\nOTA pending after set: {response}")
+        assert "OTA Pending: YES" in response
+        assert "size=25000" in response
+
+        # Clear
+        response = send_command(serial_port, 'set ota clear')
+        assert "OTA Pending: CLEARED" in response
+
+        # Verify cleared
+        serial_port.reset_input_buffer()
+        serial_port.write(b'get ota pending\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        logging.info(f"\nOTA pending after clear: {response}")
+        assert "OTA Pending: NO" in response
+
+    def test_ota_full_roundtrip(self, serial_port):
+        """Full roundtrip: erase, write 16 bytes, read back, verify bank addr"""
+        # Erase
+        time.sleep(0.5)
+        serial_port.reset_input_buffer()
+        serial_port.write(b'set ota erase\r\n')
+        response = _read_until_idle(serial_port, timeout=10)
+        assert "OTA Erase: OK" in response
+
+        # Write first 8 bytes at offset 0
+        response = send_command(serial_port, 'set ota write 0000 0102030405060708')
+        assert "OTA Write: OK" in response
+
+        # Write next 8 bytes at offset 8
+        response = send_command(serial_port, 'set ota write 0008 090A0B0C0D0E0F10')
+        assert "OTA Write: OK" in response
+
+        # Read back 16 bytes
+        serial_port.reset_input_buffer()
+        serial_port.write(b'get ota read 0000 16\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        logging.info(f"\nOTA roundtrip read: {response}")
+        assert "OTA Read:" in response
+        assert "01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10" in response
+
+        # Verify bank address still correct
+        serial_port.reset_input_buffer()
+        serial_port.write(b'get ota bank\r\n')
+        response = _read_until_idle(serial_port, timeout=3)
+        assert "0x08010000" in response.upper()
+
+
 class TestBeaconAndRouting:
     """Beacon and routing table tests"""
 
