@@ -38,7 +38,7 @@ typedef enum {
 /* ---- Packet direction / ownership ---- */
 typedef enum { DIR_EMPTY, OUTGOING, INCOMING, RETX } Direction;
 typedef enum { OWNER_EMPTY, PHY, MAC, NET, APP }     Owner;
-typedef enum { BEACON, PAYLOAD, ACK, PING, PONG }    PacketType;
+typedef enum { BEACON, PAYLOAD, ACK, PING, PONG, CMD_CFG, CMD_ACK } PacketType;
 
 /* ---- Return codes ---- */
 typedef enum {
