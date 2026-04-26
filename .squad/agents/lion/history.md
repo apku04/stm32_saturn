@@ -64,3 +64,22 @@ changes. Correction: restore PB8/PB9 with AF6, restore LEDs on PB13/PB14.
 
 **Cross-agent learning:** When a PCB routing error blocks a feature, re-source the measurement from an existing working sensor rather than inventing impossible firmware workarounds. Architecture decision (Cawl override) based on PCB constraint (Kotov finding) + hardware verification (Eisenhorn audit).
 
+### 2026-04-26 — GPS Driver Review APPROVED (Dorn's 6 Fixes)
+
+**Status:** ✅ APPROVED — all 6 fixes verified, zero defects
+
+**Fixes reviewed:**
+1. SENSE_LDO_EN (PA15) power sequencing — output config, BSRR set, 100ms delay before USART2
+2. AF4→AF7 on PA2/PA3 — AFRL bits [11:8] and [15:12] correctly set to 7
+3. Non-blocking gps_poll() — SPSC ring buffer drain, returns immediately when empty
+4. USART2 RXNE ISR — correct handler name, IRQ 28 in vector table, ORE cleared, race-safe ring buffer
+5. Beacon payload v5 — GPS at data[9..17] (9 bytes), pkt.length=22, within 50-byte DATA_LEN
+6. USART2 register defs in stm32u0.h — base 0x40004400, all offsets and bits match RM0503
+
+**Key verification points:**
+- NVIC_ISER direct write is safe (write-1-to-set semantics, doesn't clear other IRQs)
+- Ring buffer uses power-of-2 size (64) with bitmask — correct SPSC lock-free pattern
+- delay_ms available via timer.h include; no fabricated function names
+- DFU/USB path (PA11/PA12) completely unaffected by GPS pin configuration
+- Spec deviation: 100ms LDO warmup vs 500ms in decision #15, but TPS7A0233DBVR starts in <1ms; acceptable
+

@@ -136,3 +136,20 @@ None of the 10 skills were skipped — all modules warranted their own reusable 
 - Ring buffer size 64 is adequate for 9600 baud (960 bytes/s) with 10ms worst-case main loop latency
 - Vector table must be extended to cover any IRQ you enable — a short table leaves the handler pointing at 0x00000000 → HardFault
 - Build size grew from ~22KB to ~29KB (added ISR, ring buffer, GPS payload encoding, extended vector table)
+
+## Review — 2026-04-26 (Lion APPROVED)
+
+**Verdict:** ✅ APPROVED — All 6 GPS fixes cleared for deployment.
+
+**Lion verified:**
+- USART2_BASE 0x40004400, PA2/PA3 AF7 (not AF4)
+- PA15 output push-pull, HIGH before USART2 setup, 100ms LDO delay
+- USART2 RXNE IRQ 28, NVIC enabled, vector table extended to slot 44
+- Ring buffer 64-byte SPSC lock-free (ISR writes rx_head, poll writes rx_tail)
+- Beacon payload 18 bytes: pkt.data[9..17] = lat(4) + lon(4) + fix_valid(1)
+- USART2 register defs moved to stm32u0.h with RM0503-verified offsets and bits
+- DFU USB CDC path safe (no pin overlap with GPS)
+
+**Build clean:** 29420 bytes text, 108 bytes data, 2240 bytes BSS. Zero compiler warnings. All register addresses and APIs verified against source — no fabrications.
+
+**Readiness:** Ready for flash deployment.

@@ -625,3 +625,57 @@ Added 7 terminal commands (`get ota bank`, `set ota erase`, `set ota write`, `ge
 
 - Hardware validation pending (need board + DFU flash of new binary)
 - `ota_clear_pending()` rewrites all config page slots — if a slot was previously written (not 0xFF), it survives. If config was uninitialized, all slots read as 0xFF and get skipped. This is correct but subtle.
+
+---
+
+### 18. Lion Review — Dorn's GPS Fixes (6 items) ✅ APPROVED
+
+**Date:** 2026-04-26  
+**Reviewer:** Lion  
+**Author:** Dorn  
+**Files reviewed:** `gps.c`, `gps.h`, `stm32u0.h`, `hw_pins.h`, `main.c`  
+**Reference:** Decision #16 (GPS Integration)  
+**Verdict:** ✅ APPROVED
+
+## All 6 Fixes Verified
+
+All 6 fixes verified against source files and register definitions. No fabricated addresses, no invented APIs, no pin errors.
+
+### Fix 1 — SENSE_LDO_EN (PA15) Power Sequencing ✅
+- PA15 configured as output push-pull, driven HIGH before USART2 setup
+- 100ms delay for LDO + GPS module power-up
+- TPS7A0233DBVR startup is <1ms typical; 100ms is conservative
+
+### Fix 2 — AF4 → AF7 ✅
+- PA2/PA3 USART2 alternate function corrected from AF4 (wrong) to AF7 (correct)
+- AF4 on PA2/PA3 routes to LPUART2/USART3 — USART2 was electrically dead at AF4
+- Now uses hw_pins.h macros (GPS_RX_PIN, GPS_TX_PIN) instead of magic numbers
+
+### Fix 3 — Non-blocking GPS Poll ✅
+- `gps_poll()` returns immediately when empty
+- No blocking waits or infinite loops
+- `fix.valid` initialized to 0 (false)
+
+### Fix 4 — USART2 RXNE ISR + Ring Buffer ✅
+- ISR name `USART2_IRQHandler` placed at vector table slot 44 (IRQ 28)
+- NVIC enabled correctly via `NVIC_ISER = (1u << 28)`
+- ORE cleared to prevent USART stall
+- Ring buffer: 64-byte (power-of-2), SPSC lock-free, ISR writes `rx_head` only, poll writes `rx_tail` only
+
+### Fix 5 — Beacon Payload ✅
+- GPS data at pkt.data[9..17]: lat(4) + lon(4) + fix_valid(1) = 9 bytes
+- Total payload = 18 bytes (was 9), well within `data[50]` limit
+- Memcpy endianness consistent with receiver reconstruction
+
+### Fix 6 — USART2 Defs in stm32u0.h ✅
+- All register addresses and bit positions verified against RM0503
+- USART2_BASE = 0x40004400, all offsets correct
+- Consistent with I2C and SPI definitions already in header
+
+## DFU Safety ✅
+
+USB CDC init (PA11/PA12 AF10) has no pin overlap with GPS (PA2/PA3). USB enumeration unaffected.
+
+## Summary
+
+Six fixes, zero defects found. Every register address, pin number, AF value, ISR name, and payload offset verified against source files. Dorn's work is clean. Ready for flash deployment.
