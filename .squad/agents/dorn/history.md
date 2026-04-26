@@ -113,3 +113,26 @@ Authored three reusable skills under `.squad/skills/` for future agents:
 - `terminal-commands/SKILL.md` — argv parsing via in-place NUL, get/set/send/dfu dispatch, `get solar` production format, DO NOT change `[RX]`/`[BEACON]`/`Solar:` prefixes (test suite parses them)
 
 None of the 10 skills were skipped — all modules warranted their own reusable notes. One `[verify]` flag in `flash-config-storage` on the 64 KB vs 128 KB flash size discrepancy between charter and flash_config.c.
+
+### 2026-07-25 — GPS Driver Fix + Beacon Integration
+
+**Six fixes applied in one pass, all verified by clean build:**
+
+1. **SENSE_LDO_EN (PA15) power sequencing:** Added to `gps_init()` — configure PA15 as output push-pull, drive HIGH, then `delay_ms(100)` before USART2 config. GPS module was unpowered in firmware; this was the #1 reason for no NMEA data.
+
+2. **AF4 → AF7 fix (CRITICAL):** PA2/PA3 USART2 alternate function was AF4 (wrong). Changed to AF7 per RM0503 Table 20. AF4 on these pins routes to LPUART2/USART3 — USART2 is electrically dead at AF4. Also switched from magic `2*2`/`3*2` to `GPS_RX_PIN`/`GPS_TX_PIN` hw_pins.h macros.
+
+3. **Non-blocking gps_poll():** Was already non-blocking (drains available bytes and returns), but now reads from ring buffer instead of USART2_RDR directly. Never blocks the main loop. fix.valid field already existed as `fix.valid` (bool).
+
+4. **USART2 RXNE interrupt + 64-byte ring buffer:** Added `USART2_IRQHandler` ISR that captures bytes into a power-of-2 ring buffer. Clears ORE on overrun. NVIC enabled for IRQ 28 (USART2). Vector table in main.c extended from 4 entries to 45 (16 system + 29 IRQs) to reach the USART2 slot. This prevents NMEA corruption during SX1262 blocking radio ops.
+
+5. **GPS wired into beacon payload:** Beacon v5 now sends 18 bytes: existing 9 (i_ma, bus_mv, bat_mv, chg, tx_pwr, sf) + lat_udeg(4) + lon_udeg(4) + fix_valid(1) at pkt.data[9..17]. Total 18/50 bytes used. Sends zeros with fix_valid=0 until GPS acquires fix.
+
+6. **USART2 register defs moved to stm32u0.h:** Removed local `#define` block from gps.c, added canonical definitions in stm32u0.h alongside other peripherals. Includes USART_CR1_RXNEIE for the interrupt enable bit.
+
+**Key lessons:**
+- STM32U073 USART2 on PA2/PA3 is AF7, not AF4 — datasheet table is the only trustworthy source
+- PA15 (SENSE_LDO_EN) controls the TPS7A0233DBVR LDO that powers the GPS VCC_SENSE rail — must be HIGH before any GPS comms
+- Ring buffer size 64 is adequate for 9600 baud (960 bytes/s) with 10ms worst-case main loop latency
+- Vector table must be extended to cover any IRQ you enable — a short table leaves the handler pointing at 0x00000000 → HardFault
+- Build size grew from ~22KB to ~29KB (added ISR, ring buffer, GPS payload encoding, extended vector table)

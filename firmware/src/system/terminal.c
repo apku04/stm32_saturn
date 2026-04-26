@@ -20,6 +20,7 @@
 #include "ina219.h"
 #include "i2c.h"
 #include "flash_ota.h"
+#include "gps.h"
 
 uint8_t sniffer = 0;
 
@@ -273,6 +274,70 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         print(buf);
     } else if (strcmp((const char *)argv[1], "routing") == 0) {
         print_routing_table();
+    } else if (strcmp((const char *)argv[1], "gps") == 0) {
+        if (argc >= 3 && strcmp((const char *)argv[2], "raw") == 0) {
+            uint8_t on = (argc >= 4) ? (uint8_t)atoi((const char *)argv[3]) : 1;
+            gps_set_raw_echo(on);
+            snprintf(buf, sizeof(buf), "GPS raw echo: %u\n", on);
+            print(buf);
+            return;
+        }
+        if (argc >= 3 && strcmp((const char *)argv[2], "baud") == 0 && argc >= 4) {
+            uint32_t b = strtoul((const char *)argv[3], NULL, 10);
+            gps_set_baud(b);
+            snprintf(buf, sizeof(buf), "GPS baud: %lu\n", (unsigned long)b);
+            print(buf);
+            return;
+        }
+        if (argc >= 3 && strcmp((const char *)argv[2], "af") == 0 && argc >= 4) {
+            uint8_t a = (uint8_t)atoi((const char *)argv[3]);
+            gps_set_af(a);
+            snprintf(buf, sizeof(buf), "GPS AF: %u\n", a);
+            print(buf);
+            return;
+        }
+        if (argc >= 3 && strcmp((const char *)argv[2], "probe") == 0) {
+            uint32_t r = gps_probe_pa3();
+            uint32_t trans = r & 0xFFFFu;
+            uint32_t lows  = r >> 16;
+            snprintf(buf, sizeof(buf),
+                     "PA3 probe (~1s): transitions=%lu  low_samples=%lu (clamp 65535)\n",
+                     (unsigned long)trans, (unsigned long)lows);
+            print(buf);
+            return;
+        }
+        const gps_fix_t *f = gps_get_fix();
+        char nbuf[110];
+        gps_get_last_nmea(nbuf, sizeof(nbuf));
+        uint32_t toggles = 0;
+        uint32_t isr = gps_diag(&toggles);
+        snprintf(buf, sizeof(buf),
+                 "GPS sentences=%lu fix=%u sats=%u "
+                 "lat=%ld.%06ld lon=%ld.%06ld alt=%dm time=%06lu\n",
+                 (unsigned long)f->sentences, f->fix_quality, f->sats,
+                 (long)(f->lat_udeg / 1000000), (long)(f->lat_udeg < 0 ? -f->lat_udeg : f->lat_udeg) % 1000000,
+                 (long)(f->lon_udeg / 1000000), (long)(f->lon_udeg < 0 ? -f->lon_udeg : f->lon_udeg) % 1000000,
+                 f->alt_m, (unsigned long)f->time_hms);
+        print(buf);
+        snprintf(buf, sizeof(buf),
+                 "GPS diag: USART2_ISR=0x%08lX PA2_lvl=%u PA3_lvl=%u (1.5s)\n",
+                 (unsigned long)isr,
+                 (unsigned)((toggles >> 0) & 1u),
+                 (unsigned)((toggles >> 1) & 1u));
+        print(buf);
+        snprintf(buf, sizeof(buf),
+                 "GPS pin: PA2 mod=%u af=%u pu=%u  PA3 mod=%u af=%u pu=%u\n",
+                 (unsigned)((toggles >> 4)  & 3u),
+                 (unsigned)((toggles >> 8)  & 0xFu),
+                 (unsigned)((toggles >> 16) & 3u),
+                 (unsigned)((toggles >> 6)  & 3u),
+                 (unsigned)((toggles >> 12) & 0xFu),
+                 (unsigned)((toggles >> 18) & 3u));
+        print(buf);
+        if (nbuf[0]) {
+            snprintf(buf, sizeof(buf), "GPS last NMEA: %s\n", nbuf);
+            print(buf);
+        }
     } else if (strcmp((const char *)argv[1], "battery") == 0) {
         uint16_t raw = adc_read_battery_raw();
         uint32_t mv = ((uint32_t)raw * 6600UL) / 4096UL;

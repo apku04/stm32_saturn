@@ -22,6 +22,7 @@
 #include "hal.h"
 #include "adc.h"
 #include "ina219.h"
+#include "gps.h"
 
 /* ---- Globals ---- */
 static uint16_t seq = 0;
@@ -111,7 +112,15 @@ static void beaconHandler(void) {
              * the field device is currently using. */
             pkt.data[7] = radio_get_tx_power();
             pkt.data[8] = radio_get_datarate();
-            pkt.length = 4 + 9;  /* header + 9 bytes telemetry (v4) */
+
+            /* v5: append GPS position data (9 bytes) */
+            const gps_fix_t *gfix = gps_get_fix();
+            int32_t lat_udeg = gfix->valid ? gfix->lat_udeg : 0;
+            int32_t lon_udeg = gfix->valid ? gfix->lon_udeg : 0;
+            memcpy(&pkt.data[9],  &lat_udeg, 4);
+            memcpy(&pkt.data[13], &lon_udeg, 4);
+            pkt.data[17] = gfix->valid ? 1u : 0u;
+            pkt.length = 4 + 18;  /* header + 18 bytes telemetry (v5) */
 
             write_packet(&pTxBuf, &pkt);
         }
@@ -338,6 +347,7 @@ void Reset_Handler(void) {
     spi_init();
     adc_init();
     ina219_init();
+    gps_init();
     usb_cdc_init();
     usb_cdc_set_rx_callback(usb_rx_handler);
 
@@ -369,6 +379,7 @@ void Reset_Handler(void) {
     while (1) {
         usb_cdc_poll();
         timer_poll();
+        gps_poll();
 
         if (radio_ok) {
             radio_irq_handler();
@@ -386,10 +397,24 @@ void Reset_Handler(void) {
 /* ---- Vector table ---- */
 extern uint32_t _estack;
 
+/* USART2 ISR defined in gps.c */
+void USART2_IRQHandler(void);
+
 __attribute__((section(".isr_vector")))
 const uint32_t vectors[] = {
     (uint32_t)&_estack,
     (uint32_t)Reset_Handler,
     (uint32_t)HardFault_Handler,  /* NMI */
     (uint32_t)HardFault_Handler,  /* HardFault */
+    0, 0, 0, 0, 0, 0, 0,         /* Reserved (4-10) */
+    0,                            /* SVCall (11) */
+    0, 0,                         /* Reserved (12-13) */
+    0,                            /* PendSV (14) */
+    0,                            /* SysTick (15) */
+    /* IRQ 0-27 */
+    0, 0, 0, 0, 0, 0, 0, 0,      /* IRQ  0- 7 */
+    0, 0, 0, 0, 0, 0, 0, 0,      /* IRQ  8-15 */
+    0, 0, 0, 0, 0, 0, 0, 0,      /* IRQ 16-23 */
+    0, 0, 0, 0,                   /* IRQ 24-27 */
+    (uint32_t)USART2_IRQHandler,  /* IRQ 28 — USART2 */
 };

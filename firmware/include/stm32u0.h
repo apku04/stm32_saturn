@@ -258,6 +258,27 @@
 #define I2C_CR2_RD_WRN    (1 << 10)
 #define I2C_CR2_AUTOEND   (1 << 25)
 
+/* ---- USART2 ---- */
+#define USART2_BASE       0x40004400u
+#define USART2_CR1        (*(volatile uint32_t *)(USART2_BASE + 0x00))
+#define USART2_CR2        (*(volatile uint32_t *)(USART2_BASE + 0x04))
+#define USART2_CR3        (*(volatile uint32_t *)(USART2_BASE + 0x08))
+#define USART2_BRR        (*(volatile uint32_t *)(USART2_BASE + 0x0C))
+#define USART2_ISR        (*(volatile uint32_t *)(USART2_BASE + 0x1C))
+#define USART2_ICR        (*(volatile uint32_t *)(USART2_BASE + 0x20))
+#define USART2_RDR        (*(volatile uint32_t *)(USART2_BASE + 0x24))
+
+/* USART CR1/ISR/ICR bits */
+#define USART_CR1_UE      (1u << 0)
+#define USART_CR1_RE      (1u << 2)
+#define USART_CR1_TE      (1u << 3)
+#define USART_CR1_RXNEIE  (1u << 5)
+#define USART_ISR_RXNE    (1u << 5)
+#define USART_ISR_ORE     (1u << 3)
+#define USART_ICR_ORECF   (1u << 3)
+
+#define RCC_APBENR1_USART2EN (1u << 17)
+
 /* ---- Unique device ID (96-bit, factory-programmed) ---- */
 #define UID_BASE  0x1FFF6E50UL
 
