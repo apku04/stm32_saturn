@@ -55,6 +55,10 @@ RX_PATTERN = re.compile(
 RX_PATTERN_LEGACY = re.compile(
     r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+type=(\d+)\s+len=(\d+)"
 )
+BEACON_PATTERN_V5 = re.compile(
+    r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+"
+    r"tx_pwr=(\d+)\s+sf=(\d+)\s+lat=(-?\d+)\s+lon=(-?\d+)\s+fix=(\d+)\s+entries=(\d+)"
+)
 BEACON_PATTERN_V4 = re.compile(
     r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+"
     r"tx_pwr=(\d+)\s+sf=(\d+)\s+entries=(\d+)"
@@ -87,6 +91,8 @@ class LoRaMonitor:
         self.reader_thread = None
         self.running = False
         self.last_rx = {}  # src -> last RX info for beacon panel
+        self.gps_nodes = {}  # src -> latest GPS fix dict
+        self.last_fix_time = {}  # src -> timestamp string of last valid fix
 
         self._build_ui()
         self._refresh_ports()
@@ -143,7 +149,23 @@ class LoRaMonitor:
         sb2.pack(fill=tk.Y, side=tk.RIGHT)
         self.bcn_tree.configure(yscrollcommand=sb2.set)
 
-        # --- Tab 3: Raw Log ---
+        # --- Tab 3: GPS Map (node positions) ---
+        gps_frame = ttk.Frame(nb, padding=8)
+        nb.add(gps_frame, text="GPS")
+
+        gps_cols = ("time", "src", "fix", "lat", "lon", "last_fix", "maps_link")
+        self.gps_tree = ttk.Treeview(gps_frame, columns=gps_cols, show="headings", height=14)
+        for c, w in zip(gps_cols, (70, 50, 70, 120, 120, 90, 350)):
+            self.gps_tree.heading(c, text=c.upper().replace("_", " "))
+            self.gps_tree.column(c, width=w, minwidth=30)
+        self.gps_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        sb3 = ttk.Scrollbar(gps_frame, orient=tk.VERTICAL, command=self.gps_tree.yview)
+        sb3.pack(fill=tk.Y, side=tk.RIGHT)
+        self.gps_tree.configure(yscrollcommand=sb3.set)
+        self.gps_tree.tag_configure("fix", foreground="green")
+        self.gps_tree.tag_configure("nofix", foreground="gray")
+
+        # --- Tab 4: Raw Log ---
         log_frame = ttk.Frame(nb)
         nb.add(log_frame, text="Log")
 
@@ -255,15 +277,16 @@ class LoRaMonitor:
                     self.root.after(0, self._log, line + "\n")
 
                     # Check for [BEACON] line (follows a [RX] with type=0)
-                    bcn_v4 = BEACON_PATTERN_V4.match(line)
-                    bcn_v3 = BEACON_PATTERN_V3.match(line) if not bcn_v4 else None
-                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not (bcn_v4 or bcn_v3) else None
-                    bcn = BEACON_PATTERN.match(line) if not (bcn_v4 or bcn_v3 or bcn_v2) else None
-                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not (bcn_v4 or bcn_v3 or bcn_v2 or bcn) else None
-                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not (bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg) else None
-                    if bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
-                        match = bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min
-                        version = "v4" if bcn_v4 else ("v3" if bcn_v3 else None)
+                    bcn_v5 = BEACON_PATTERN_V5.match(line)
+                    bcn_v4 = BEACON_PATTERN_V4.match(line) if not bcn_v5 else None
+                    bcn_v3 = BEACON_PATTERN_V3.match(line) if not (bcn_v5 or bcn_v4) else None
+                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3) else None
+                    bcn = BEACON_PATTERN.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2) else None
+                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn) else None
+                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg) else None
+                    if bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
+                        match = bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min
+                        version = "v5" if bcn_v5 else ("v4" if bcn_v4 else ("v3" if bcn_v3 else None))
                         beacon_data = self._parse_beacon(match, version=version)
                         if pending_rx:
                             self.root.after(0, self._add_rx_packet, pending_rx, beacon_data)
@@ -317,6 +340,12 @@ class LoRaMonitor:
 
     def _parse_beacon(self, m, version=None):
         groups = m.groups()
+        if version == "v5" and len(groups) == 10:
+            # v5: i_ma, bus, bat, chg, tx_pwr, sf, lat_udeg, lon_udeg, fix, entries
+            return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],
+                    "chg": groups[3], "tx_pwr": groups[4], "sf": groups[5],
+                    "lat_udeg": int(groups[6]), "lon_udeg": int(groups[7]),
+                    "fix": int(groups[8]), "entries": groups[9]}
         if version == "v4" and len(groups) == 7:
             # v4: i_ma, bus, bat, chg, tx_pwr, sf, entries
             return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],
@@ -365,7 +394,17 @@ class LoRaMonitor:
             extra = ""
             if beacon.get("tx_pwr", "—") != "—":
                 extra = f"  TxPwr={beacon['tx_pwr']}  SF={beacon['sf']}"
-            info = f"Bus={bus_v}  I={i_ma}  P={p_mw}  Charge={chg_s}  Routes={beacon['entries']}{extra}"
+            # GPS suffix for v5 beacons
+            gps_suffix = ""
+            if "lat_udeg" in beacon:
+                lat = beacon["lat_udeg"] / 1_000_000
+                lon = beacon["lon_udeg"] / 1_000_000
+                if beacon["fix"]:
+                    gps_suffix = f"  📍 {lat:.6f},{lon:.6f}"
+                else:
+                    gps_suffix = "  📍 no fix"
+                self._update_gps_tab(ts, rx["src"], beacon)
+            info = f"Bus={bus_v}  I={i_ma}  P={p_mw}  Charge={chg_s}  Routes={beacon['entries']}{extra}{gps_suffix}"
 
             # Add to beacon tree
             self.bcn_tree.insert("", 0, values=(
@@ -389,6 +428,50 @@ class LoRaMonitor:
         if len(children) > 500:
             for c in children[500:]:
                 self.pkt_tree.delete(c)
+
+    def _update_gps_tab(self, ts, src, beacon):
+        lat = beacon["lat_udeg"] / 1_000_000
+        lon = beacon["lon_udeg"] / 1_000_000
+        fix = beacon["fix"]
+
+        # Track last fix time per node
+        src_key = str(src)
+        if fix:
+            self.last_fix_time[src_key] = ts
+
+        last_fix_ts = self.last_fix_time.get(src_key, "never")
+
+        if fix:
+            fix_str = "✓ FIX"
+            lat_str = f"{lat:.6f}°"
+            lon_str = f"{lon:.6f}°"
+            maps = f"https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+            tag = "fix"
+        else:
+            fix_str = "✗ NO FIX"
+            # Show last known coords with stale marker when available
+            if lat != 0.0 or lon != 0.0:
+                lat_str = f"[stale] {lat:.6f}°"
+                lon_str = f"[stale] {lon:.6f}°"
+                maps = f"(stale) https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+            else:
+                lat_str = "— no data —"
+                lon_str = "— no data —"
+                maps = "—"
+            tag = "nofix"
+
+        # Remove previous row for this src (keep only latest per node)
+        for iid in self.gps_tree.get_children():
+            if self.gps_tree.set(iid, "src") == src_key:
+                self.gps_tree.delete(iid)
+                break
+
+        self.gps_tree.insert("", 0, tags=(tag,), values=(
+            ts, src, fix_str,
+            lat_str, lon_str,
+            last_fix_ts,
+            maps,
+        ))
 
     # ---------------------------------------------------------- Commands
     def _send_command(self):
