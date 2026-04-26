@@ -121,3 +121,44 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 **Discrepancy:** User refers to header as "M3" but schematic/PCB designator is **H3**. Likely a silkscreen marking difference or user convention. No electrical discrepancy found.
 
 **Other VCC_SENSE consumers:** H4 pin 4 (I2C connector), R38/R39 (pull-ups), C48 (decoupling). GPS module shares this rail with battery sense divider circuit.
+
+### 2026-04-24 — SENSE_LDO_EN Pin Verification (PA15 vs PA1 — Perturabo Concern 2)
+
+**Context:** Perturabo flagged potential mismatch: user described SENSE_LDO_EN as PA1, but hw_pins.h says PA15. If board wired to PA1 but firmware drives PA15, GPS LDO never enables.
+
+**Schematic DB coordinate proof (EasyEDA SQLite3):**
+
+| Item | Symbol Offset | Origin | Absolute Position |
+|------|--------------|--------|-------------------|
+| MCU U3 PA15 pin | (-80, -145) | (630, 780) | **(550, 635)** |
+| MCU U3 PA1 pin  | (-80, -5)   | (630, 780) | (550, 775) |
+| SENSE_LDO_EN wire (1st segment) | — | — | **(550, 635) → (510, 635)** |
+
+Wire endpoint (550,635) matches **PA15** exactly — not PA1 (which would be at 550,775).
+
+**TPS7A0233 U24 EN pin verification:**
+- U24 origin: (805, 325)
+- EN pin symbol offset: (-40, -10)
+- EN absolute: (765, 315)
+- SENSE_LDO_EN wire (2nd segment): (765, 315) → (740, 315) ✅
+
+**Verdict:** Schematic confirms PA15 is SENSE_LDO_EN. `hw_pins.h` (`SENSE_LDO_EN_PIN = 15`) is correct. The user's original "PA1" description was a typo/miscommunication. No hardware bug. Dorn's live GPS fix corroborates this — PA15 is driving the LDO correctly.
+
+### 2026-04-26 — Session Completion: PA15 Pin Verification (Concern 2)
+
+**Scope:** Verified SENSE_LDO_EN pin assignment under Perturabo audit.
+
+**Investigation:** User questioned PA1 vs PA15 mismatch. Traced EasyEDA schematic DB (SQLite3):
+- MCU U3 at (630, 780)
+- PA15 at (550, 635) ← SENSE_LDO_EN wire connects here
+- PA1 at (550, 775) ← not connected
+- Confirmed with U24 TPS7A0233DBVR EN pin at (765, 315)
+
+**Verdict:** PA15 is correct per schematic. Firmware hw_pins.h matches hardware. No bug. User's "PA1" was typo/miscommunication.
+
+**Live confirmation:** Dorn's GPS test shows LDO operational (GPS receiving live data).
+
+**Documentation:** Decision written to decisions.md. Orchestration log created.
+
+**Status:** ✅ COMPLETE — Concern resolved, no changes needed.
+

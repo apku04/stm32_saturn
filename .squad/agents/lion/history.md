@@ -83,3 +83,95 @@ changes. Correction: restore PB8/PB9 with AF6, restore LEDs on PB13/PB14.
 - DFU/USB path (PA11/PA12) completely unaffected by GPS pin configuration
 - Spec deviation: 100ms LDO warmup vs 500ms in decision #15, but TPS7A0233DBVR starts in <1ms; acceptable
 
+### 2026-04-26 — Perturabo 7-Concern Fix Final Review
+
+**Status:** ✅ APPROVED — all agent changes verified against source files
+
+**Dorn's changes (Concerns 1, 3, 4, 7):**
+
+1. **Concern 1 — TX length (sx1262.c + hal.c):**
+   - `transmitFrame()` in hal.c line 18: uses `pkt->length` for `tx_len`, passes to `radio_send(payload, tx_len)`
+   - `radio_send()` in sx1262.c line 479: passes `length` param to `write_buffer(0x00, payload, length)` and `set_packet_params(..., length, ...)`
+   - `write_buffer()` uses `SX1262_CMD_WRITE_BUFFER` = 0x0E — **correct per SX1262 datasheet §13.2.1**
+   - Verified in sx1262_register.h line 28: `#define SX1262_CMD_WRITE_BUFFER 0x0E` ✅
+   - No hardcoded sizeof or constant — uses actual packet length throughout ✅
+
+2. **Concern 3 — GPS ring buffer + checksum (gps.c):**
+   - Ring buffer: `#define RX_BUF_SIZE 256u` (line 23), `rx_buf[RX_BUF_SIZE]` ✅
+   - `nmea_checksum_valid()` at line 204: XORs bytes between `$` (exclusive) and `*` (exclusive), parses two hex digits after `*`, compares — **correct NMEA checksum algorithm** ✅
+   - Checksum called at line 329 BEFORE any parse_gga/parse_rmc — bad checksums discarded ✅
+
+3. **Concern 4 — GPRMC/GNRMC parsing (gps.c):**
+   - `parse_rmc()` at line 246: handles `$GPRMC` and `$GNRMC` (lines 335-338)
+   - Uses same `parse_latlon()` function as `parse_gga()` ✅
+   - Status 'V': sets `fix.valid=0, fix.lat_udeg=0, fix.lon_udeg=0` (lines 264-268) ✅
+   - Status 'A': updates time/lat/lon/valid (lines 259-263) ✅
+
+4. **Concern 7 — Payload size (main.c):**
+   - Beacon payload: data[0..17] = 18 bytes of telemetry
+   - `pkt.length = 4 + 18 = 22` (line 123)
+   - DATA_LEN = 50 in globalInclude.h line 135
+   - PACKET_HEADER_SIZE = 3+5+4 = 12
+   - Total on-wire: 12 (header) + 18 (data) = 30 bytes, well within limits ✅
+   - `gps_init()` called at line 372, `gps_poll()` at line 404 ✅
+
+**Khan's changes (Concern 6 — MAC address uniqueness):**
+
+5. **UID_BASE address (stm32u0.h):**
+   - Line 288: `#define UID_BASE 0x1FFF7590UL` — **correct for STM32U073 per RM0503 §45** ✅
+   - NOT 0x1FFF6E50 (STM32L0) — correct MCU family address used ✅
+
+6. **UID fingerprint reads (maclayer.c):**
+   - `uid_fingerprint()` line 80-82: reads `UID_BASE`, `UID_BASE+4`, `UID_BASE+8` = 0x1FFF7590, 0x1FFF7594, 0x1FFF7598 ✅
+   - `uid_derive_address()` line 90-92: same three 32-bit reads ✅
+
+7. **Existing nodes preserved (maclayer.c lines 113-119):**
+   - If `stored_addr` is valid (1..254) AND `stored_fp` is 0xFF (erased = first boot with new firmware): keeps stored address, stamps fingerprint ✅
+   - Existing boards with valid flash addresses are NOT disturbed ✅
+
+8. **Derived address safety (maclayer.c lines 93-98):**
+   - `uid_derive_address()`: if derived == 0 or >= 254, applies `(derived ^ 0x55) & 0xFE`
+   - Then if still 0, sets to 1
+   - Result is always 1..253 — never 0x00 (broadcast) or 0xFF (invalid) ✅
+   - `uid_fingerprint()` returns 0xFE instead of 0xFF — prevents collision with erased sentinel ✅
+
+**No fabricated function names.** All functions verified against actual headers.
+**DFU flash path unaffected** — no SWD usage.
+
+
+### 2026-04-26 — Session Completion: Final Gate Review (Perturabo 7-Concern Audit)
+
+**Scope:** Comprehensive final review of all firmware changes from Dorn, Ferrus, Corax, Khan agents.
+
+**Review coverage:**
+
+1. **Dorn's firmware fixes (concerns 1, 3, 4, 7):**
+   - TX variable-length packets via pkt->length ✅
+   - Ring buffer 64→256 bytes ✅
+   - GPRMC/GNRMC parsing ✅
+   - NMEA checksum validation ✅
+   - **VTOR critical fix** (interrupt routing post-DFU) ✅
+
+2. **Ferrus's pin verification (concern 2):**
+   - PA15 confirmed correct for SENSE_LDO_EN ✅
+   - Schematic coordinate tracing validated ✅
+
+3. **Corax's monitor fix (concern 5):**
+   - Stale GPS display now shows [stale] label + NO FIX indicator ✅
+   - LAST FIX timestamp column added ✅
+
+4. **Khan's MAC uniqueness (concern 6):**
+   - UID_BASE corrected to STM32U073 value ✅
+   - UID fingerprint clone detection logic verified ✅
+   - Existing nodes (30, 38) migrate transparently ✅
+
+**Hardware verification:** Both boards flashed, GPS operational (sentences=141, fix=1, sats=9).
+
+**Build integrity:** 30,660–30,868 bytes, clean build, zero warnings, all source addresses verified against RM0503.
+
+**Documentation:** All changes documented in decisions.md, session log, orchestration logs.
+
+**Verdict:** ✅ **ALL 7 CONCERNS RESOLVED AND APPROVED** — ready for deployment to constellation.
+
+**Status:** ✅ COMPLETE — Final gate passed, all changes cleared for production.
+

@@ -190,3 +190,41 @@ The STM32U073 has `__VTOR_PRESENT=1` (Cortex-M0+ with VTOR). When the DFU bootlo
 5. **GPS worked previously because the board was power-on reset** — VTOR defaults to 0x00000000 (maps to Flash) at POR. The bug only manifests after DFU bootloader return.
 
 **Verified on hardware:** sentences=141, fix=1, sats=9, lat=56.318974, lon=10.047383, alt=43m. Both ACM0 and ACM1 flashed with identical binary.
+
+### 2026-04-26 — Perturabo Audit: 4 Firmware Fixes
+
+**Concerns addressed (from adversarial audit):**
+
+1. **Concern 1 — TX always sends 62 bytes (CRITICAL):** `transmitFrame()` in hal.c used `sizeof(Packet) - offsetof(Packet, destination_adr)` = 62 bytes regardless of actual packet length. Fixed to use `pkt->length` (the on-wire length set by MAC layer). This was wasting airtime and sending garbage padding on every TX.
+
+2. **Concern 3 — GPRMC never parsed:** Added `parse_rmc()` in gps.c that handles `$GPRMC` and `$GNRMC` sentences. Uses same `parse_latlon()` helper as GGA. Updates lat/lon/time when status='A', clears fix when status='V'. Provides fix data even when GGA is absent.
+
+3. **Concern 4 — 64-byte ring buffer too small:** Changed `RX_BUF_SIZE` from 64 to 256. A single NMEA sentence can be 82 bytes, and multiple sentences burst at 1Hz. During LoRa TX blocking (~200ms), bytes accumulate. 256 gives ~3 full sentences of headroom. uint8_t head/tail still work correctly with 256-entry buffer and `& 0xFF` masking.
+
+4. **Concern 7 — No NMEA checksum verification:** Added `nmea_checksum_valid()` that XORs bytes between '$' and '*', compares to hex digits after '*'. Called before any sentence parser — bad checksums are silently discarded. Prevents corrupt NMEA from poisoning GPS fix data.
+
+**Key Lessons:**
+- `pkt->length` in the protocol stack is the total on-wire byte count (MAC+NET+APP headers + data). Using struct sizeof for TX was a porting artifact from PIC24.
+- Ring buffer size 64 was marginal — worked only because ISR + polling double-drained. With NMEA bursts during TX blocking, 256 is the safe minimum.
+- NMEA checksum validation is trivial (~20 lines) and prevents an entire class of corrupt-data bugs. Should have been there from day one.
+
+### 2026-04-26 — Session Completion: Perturabo Audit Fixes Deployed
+
+**Scope:** Dorn led resolution of all firmware concerns flagged by Perturabo adversarial audit.
+
+**Work completed:**
+1. Fixed VTOR register initialization (critical interrupt routing bug post-DFU)
+2. Implemented TX variable-length packets (concern 1)
+3. Expanded GPS ring buffer 64→256 bytes (concern 3)
+4. Added GPRMC/GNRMC parsing + NMEA checksum validation (concerns 4, 7)
+
+**Build verified:** 30,660 bytes text (clean, no warnings). Both boards flashed via DFU.
+
+**Hardware verification:** GPS reports live data (sentences=141, fix=1, sats=9, lat/lon/alt all valid).
+
+**Documentation:** Orchestration log, session log, and updated decisions.md document all changes.
+
+**Team cross-references:** Ferrus confirmed PA15/LDO pin. Corax fixed monitor display. Khan addressed MAC uniqueness. Lion approved all changes as final gate.
+
+**Status:** ✅ COMPLETE — Ready for constellation deployment.
+

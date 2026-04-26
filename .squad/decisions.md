@@ -820,3 +820,162 @@ No conflicts with existing macros. All new defines are in the USART section bloc
 All 10 verification points pass. No fabricated register addresses, no invented API functions, no wrong bit positions, no protocol violations. Every claim in the commit description is verified against actual source files and RM0503/ARM TRM references.
 
 **APPROVED** for merge.
+
+---
+
+### 6. Perturabo Audit: Firmware Fixes (Concerns 1, 3, 4, 7)
+
+**Date:** 2026-04-26
+**Author:** Dorn (STM32 Expert)
+**Trigger:** Perturabo adversarial audit — 4 concerns
+
+## Decisions Made
+
+#### 1. TX uses pkt->length (not struct sizeof)
+`transmitFrame()` now sends exactly `pkt->length` bytes over the air. This was the most critical fix — the old code sent 62 bytes regardless, wasting airtime and transmitting uninitialized struct padding.
+
+#### 2. GPRMC/GNRMC parsing added
+The GPS driver now parses RMC sentences in addition to GGA. RMC provides lat/lon/time without altitude. GGA is still preferred (has altitude and sat count), but RMC provides redundancy. Both parsers share `parse_latlon()`.
+
+#### 3. Ring buffer increased to 256 bytes
+USART2 ISR ring buffer grew from 64 to 256. Power-of-2 requirement preserved. uint8_t head/tail indices still valid (0-255 covers full 256-entry buffer).
+
+#### 4. NMEA checksum verification mandatory
+All NMEA sentences are checksummed before parsing. Invalid sentences are silently dropped. This is standard practice for any GPS integration.
+
+## Impact
+- LoRa packets are now variable-length (saves airtime, reduces collision window)
+- GPS fix reliability improved (RMC fallback + checksum prevents corrupt data)
+- Ring buffer overflow during TX blocking eliminated
+
+## Files Changed
+- `firmware/src/driver/gps.c` — concerns 3, 4, 7
+- `firmware/src/system/hal.c` — concern 1
+
+---
+
+### 7. SENSE_LDO_EN is PA15 (Confirmed)
+
+**Agent:** Ferrus (PCB Expert)
+**Date:** 2026-04-26
+**Triggered by:** Perturabo Concern 2 — PA15 vs PA1 mismatch question
+
+## Context
+
+User originally described SENSE_LDO_EN as PA1. Firmware (`hw_pins.h`) defines it as PA15.
+Perturabo flagged this as a potential hardware/firmware mismatch that could prevent GPS power-up.
+
+## Evidence
+
+### Schematic proof (EasyEDA SQLite3 DB, coordinate tracing)
+
+1. **MCU U3** (STM32U073CBT6) placed at origin (630, 780)
+2. **PA15 pin** in symbol at offset (-80, -145) → absolute **(550, 635)**
+3. **PA1 pin** in symbol at offset (-80, -5) → absolute (550, 775)
+4. **SENSE_LDO_EN wire** connects at **(550, 635)** — matches PA15, not PA1
+5. **U24** (TPS7A0233DBVR) EN pin at (765, 315) — second SENSE_LDO_EN wire endpoint matches
+
+### Firmware confirmation
+
+```c
+#define SENSE_LDO_EN_PORT GPIOA
+#define SENSE_LDO_EN_PIN  15  /* PA15 — LDO enable for sense divider */
+```
+
+### Live confirmation
+
+Dorn's GPS test showed live coordinates being received — GPS is powered, which means PA15 is successfully enabling U24.
+
+## Decision
+
+**SENSE_LDO_EN = PA15 is correct.** No hardware bug. No firmware change needed.
+
+The user's "PA1" was a typo or miscommunication. Concern is resolved.
+
+## Status: CLOSED — No action required
+
+---
+
+### 8. Fix stale GPS display in lora_monitor.py
+
+**Author:** Corax  
+**Date:** 2026-04-26  
+**Status:** Implemented  
+**Addresses:** Perturabo Concern 5
+
+## Problem
+
+`tools/lora_monitor.py` GPS tab kept showing the last good coordinates even after a node lost its GPS fix (fix=0). The `_update_gps_tab()` method was only called when `fix=1`, so `fix=0` beacons never updated the GPS tab display.
+
+## Decision
+
+Always call `_update_gps_tab()` when a v5 beacon contains GPS fields, regardless of fix status. When fix=0:
+
+- Show "✗ NO FIX" in the fix column (was just "✗")
+- Prefix coordinates with `[stale]` so they're visually distinct
+- Prefix maps link with `(stale)` 
+- Grey out the row via the existing `nofix` tag (foreground="gray")
+- Show "— no data —" if coordinates are 0,0
+
+When fix=1:
+- Show "✓ FIX" in green
+- Display coordinates normally
+
+## Additional change
+
+Replaced the unused "ALT" column with "LAST FIX" — tracks the timestamp of the most recent valid fix per node, giving operators a quick sense of how long a node has been without GPS.
+
+## Files changed
+
+- `tools/lora_monitor.py`
+
+---
+
+### 9. MAC Address Uniqueness Hardening
+
+**Date:** 2026-04-26
+**Author:** Khan (LoRa Expert)
+**Concern:** Perturabo Concern 6 — MAC uniqueness fragile
+
+## Problem
+
+Two cloned boards sharing the same flash image end up with identical DEVICE_ID (node address), causing MAC collisions on the LoRa network. The previous code only derived from UID when flash was blank — a cloned board with valid flash would reuse the donor's address forever.
+
+## Solution: UID Fingerprint Clone Detection
+
+### Approach
+
+A 1-byte UID fingerprint (XOR of all 12 UID bytes, avoiding 0xFF) is stored in flash alongside the device config. On every boot, `mac_layer_init()` compares the stored fingerprint to the current board's UID:
+
+| Flash DEVICE_ID | Flash UID_FINGERPRINT | Match? | Action |
+|---|---|---|---|
+| Invalid (0xFF/0/255) | any | — | Derive address from UID (first boot) |
+| Valid (1–254) | 0xFF (never written) | — | **Migration**: keep address, stamp fingerprint |
+| Valid (1–254) | matches current UID | ✓ | Keep address (same board) |
+| Valid (1–254) | doesn't match | ✗ | **Clone detected**: derive new address from UID |
+
+### Why not Option A (XOR flash ID with UID)?
+
+XORing the stored ID with UID at every boot would change the addresses of existing boards (nodes 30, 38) — breaking the network. The fingerprint approach preserves existing addresses while detecting future clones.
+
+## Files Changed
+
+- **`firmware/include/stm32u0.h`** — Fixed UID_BASE from `0x1FFF6E50` to `0x1FFF7590` (correct for STM32U073 per RM0503 §45)
+- **`firmware/include/globalInclude.h`** — Added `UID_FINGERPRINT` to `addrEnum`
+- **`firmware/src/system/flash_config.c`** — Added `writeFlashByte()` for single-slot flash writes without page erase
+- **`firmware/src/system/flash_config.h`** — Declared `writeFlashByte()`
+- **`firmware/src/protocol/maclayer.c`** — Rewrote `mac_layer_init()` with `uid_fingerprint()`, `uid_derive_address()`, and clone-detection logic
+
+## Migration Path
+
+Existing boards (ACM1 node 30, ACM0 node 38) will see `UID_FINGERPRINT = 0xFF` on first boot with this firmware. The migration path stamps the fingerprint and preserves the address. Subsequent boots see a matching fingerprint → no change.
+
+## Edge Cases
+
+- `writeFlash()` (terminal `set flash`) erases the whole config page including the fingerprint. Next boot sees 0xFF → migration path re-stamps it. This is safe.
+- UID fingerprint collisions (two different UIDs producing the same byte) are possible (1/255 chance) but only matter if those boards also share the same cloned DEVICE_ID — extremely unlikely in practice.
+
+## Build Status
+
+Clean (no errors, no new warnings). Binary size: 30868 text, 108 data, 2456 bss.
+
