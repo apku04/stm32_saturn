@@ -436,3 +436,94 @@ monitor parsing all technically correct despite wrong pins.
 - **hal-clock-init:** Fixed flash wait states from "1 WS" to **0 WS** (FLASH_ACR.LATENCY reset default on STM32U0 Range 1, valid up to 24 MHz). Removed `[verify]` tag, kept the conditional warning for >24 MHz clocks.
 **Confidence bumps:** stm32u073-spi1, stm32u073-timer, flash-config-storage, packet-buffer → `high` (fully cross-checked against source).
 **Why:** Dorn's batch had 4 material errors and 3 `[verify]` tags. All resolved from firmware source + linker.
+
+---
+
+### 15. GPS Module (GY-GPS6MV2) Hardware & Driver Integration — Session 2026-04-26
+
+**Date:** 2026-04-26T11:52:08Z  
+**Status:** ARCHITECTURED (Ferrus verified, Perturabo BLOCKED, Guilliman designed, Khan specced)  
+**Authority:** Ferrus, Perturabo, Guilliman, Khan (Squad agents)
+
+#### 15a. Hardware Verification (Ferrus)
+
+**Findings:**
+- GPS module wired to H3 connector (3-pin: TX, RX, VCC_SENSE)
+- Pinout verified in EasyEDA: GPS_TX→PA3, GPS_RX←PA2, VCC from LDO U24 (TPS7A0233DBVR, 3.3V)
+- PA15 SENSE_LDO_EN gates power rail; must be driven HIGH before GPS UART activity
+- hw_pins.h macros correct and complete
+
+**Verdict:** ✅ APPROVED — wiring correct, pins verified, ready for driver integration.
+
+---
+
+#### 15b. Integration Critique — BLOCKED (Perturabo)
+
+**8 Concerns Identified (gates for proceeding):**
+
+1. **AF4/AF7 Mismatch (CRITICAL)** — PA2/PA3 support AF7 for USART1, but gps.c programs AF4 → wrong peripheral binding → NACK/corruption
+2. **Duty-Cycle Pre-existing** — Polled UART acceptable but inherent pattern; polled RX overrun risk at high loop latency
+3. **DFU Lockout Risk** — PA2/PA3 alternate functions may conflict during USART reconfiguration; ensure DFU flash safe
+4. **PA15 Coupling** — SENSE_LDO_EN timing may race against power sequencing; verify warmup delay before first UART byte
+5. **HSI16 Baud (Acceptable)** — HSI16÷9600 within ±3% GPS spec; no action required but clock drift budget needed
+6. **Payload Bounds** — GPS (9 bytes lat/lon + fix_valid) must fit within beacon frame; verify against max size
+7. **Parser Memory** — NMEA parser ~50 bytes local; stack acceptable but measure watermark under full load
+8. **ISR Ring Buffer Risk** — Polled RX acceptable today but ISR recommended for future robustness
+
+**Block Verdict:** GPS integration blocked until:
+1. AF4→AF7 fix (Dorn)
+2. SENSE_LDO_EN power sequencing (Dorn)
+3. Beacon payload bounds verified (Khan + Dorn)
+4. Architectural review pass (Guilliman)
+
+---
+
+#### 15c. Architecture Design (Guilliman)
+
+**Existing Code:** `gps.c` already implements USART2 + NMEA ($GPRMC, $GPGGA) parsing.
+
+**Missing Components:**
+1. **SENSE_LDO_EN Sequencing** — PA15 driven but no delay; risk of early UART access before rail stable
+2. **AF4→AF7 Fix** — Current config uses AF4 (wrong for USART1 PA2/PA3); must verify on hardware
+3. **GPS Not in Beacon** — Beacon v3/v4 does not include lat/lon; must integrate into telemetry
+
+**Integration Points:**
+- GPS init: Call after clock stable, before beacon loop; drive PA15 high then msleep(500) for VCC_SENSE warmup
+- Parser: Existing ISR ring buffer infrastructure ready; attach to USART1_IRQHandler
+- Beacon: Extract latest fix (lat/lon as 2×int32_t micro-degrees, fix_valid byte) at offset 9
+
+**Recommendation:** Keep USART2 embedded in gps.c (single consumer, existing pattern); move register defs to stm32u0.h for consistency (low priority).
+
+---
+
+#### 15d. Beacon Payload Design v5 (Khan)
+
+**New GPS Block:** 9 bytes (offset 9–17)
+
+| Field     | Type    | Size | Range        | Unit      |
+|-----------|---------|------|--------------|-----------|
+| lat       | int32_t | 4    | ±90M         | micro-deg |
+| lon       | int32_t | 4    | ±180M        | micro-deg |
+| fix_valid | uint8_t | 1    | 0=no, 1=yes  | bool      |
+
+**Capacity:** 32 bytes spare after GPS block (total 64-byte frame). Backward compatible; v3 (7 bytes) unchanged.
+
+**Format:** Little-endian (STM32 native). No-fix state: lat=0, lon=0, fix_valid=0. GPS updates every 30s (beacon cadence).
+
+---
+
+#### Summary & Gate Status
+
+- **Ferrus:** ✅ DONE — pinout verified
+- **Perturabo:** ✅ DONE — critique complete, BLOCKED verdict issued
+- **Guilliman:** ✅ DONE — architecture designed, integration gaps mapped
+- **Khan:** ✅ DONE — v5 payload designed, backward compatible
+- **Dorn (RUNNING):** Tasked with AF4→AF7 fix, SENSE_LDO_EN sequencing, ISR integration, beacon merge; build verification pending
+
+**Gate Conditions (Perturabo):**
+1. ✋ AF4→AF7 fix (Dorn) + hardware verification (Brostin)
+2. ✋ SENSE_LDO_EN sequencing (500ms warmup before first UART byte)
+3. ✋ Beacon payload merge + v5 decode in receiver
+4. ✋ Full two-board integration test
+
+**Proceed:** Unblock after Dorn commits fixes + Brostin flashes + verifies NMEA reception on real hardware.

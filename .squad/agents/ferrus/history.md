@@ -89,3 +89,35 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 - A0=A1=GND → address 0x40 confirmed
 
 2026-04-24: See decisions.md entry "Saturn board hardware & workflow facts" — covers I²C mux exclusivity, U10 INA219 init/scaling, DFU flash workflow, beacon v3 payload.
+
+### 2026-04-24 — GPS Module (GY-GPS6MV2) M3 Header Verification
+
+**Context:** User physically connected GY-GPS6MV2 to 4-pin header. User calls it "M3"; schematic designator is **H3** ("GPS UART", component e6742, 4-pin 2.54mm straight pin header).
+
+**PCB DB verification (all via EasyEDA SQLite3 `pcb1` document, PAD_NET records):**
+
+| H3 Pin | Net Name   | STM32 Pin (LQFP-48) | STM32 GPIO | Match? |
+|--------|-----------|---------------------|------------|--------|
+| 1      | GND       | GND (pins 8,23,35,47) | —        | ✅     |
+| 2      | GPS_TX    | Pin 13              | PA3 (USART2_RX) | ✅ |
+| 3      | GPS_RX    | Pin 12              | PA2 (USART2_TX) | ✅ |
+| 4      | VCC_SENSE | U24 pin 5 (output)  | —          | ✅     |
+
+**VCC_SENSE rail:**
+- U24 = TPS7A0233DBVR (3.3V fixed-output LDO)
+- Enable pin (U24 pin 3) = SENSE_LDO_EN net → STM32 pin 38 = PA15
+- Input (U24 pin 1) = VCC_IN
+- **Output voltage: 3.3V** — safe for GY-GPS6MV2 (accepts 3.3–5V, NEO-6M I/O natively 3.3V)
+
+**CRITICAL:** PA15 must be driven HIGH before GPS gets power. Same rail as battery sense circuit. If SENSE_LDO_EN is low, GPS has no VCC.
+
+**hw_pins.h verification (all three macros present):**
+- `GPS_RX_PORT/PIN` = GPIOA/2 (PA2) ✅
+- `GPS_TX_PORT/PIN` = GPIOA/3 (PA3) ✅
+- `SENSE_LDO_EN_PORT/PIN` = GPIOA/15 ✅
+
+**Naming note:** Net names use GPS perspective — "GPS_TX" = GPS module's TX line → MCU's RX (PA3). "GPS_RX" = GPS module's RX ← MCU's TX (PA2). hw_pins.h comments confirm this convention.
+
+**Discrepancy:** User refers to header as "M3" but schematic/PCB designator is **H3**. Likely a silkscreen marking difference or user convention. No electrical discrepancy found.
+
+**Other VCC_SENSE consumers:** H4 pin 4 (I2C connector), R38/R39 (pull-ups), C48 (decoupling). GPS module shares this rail with battery sense divider circuit.

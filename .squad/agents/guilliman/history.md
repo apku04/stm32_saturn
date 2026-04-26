@@ -72,3 +72,21 @@ First task: Fix INA219 on I2C2, add INA219 + battery voltage to beacon payload
 
 
 2026-04-24: See decisions.md entry "Saturn board hardware & workflow facts" — covers I²C mux exclusivity, U10 INA219 init/scaling, DFU flash workflow, beacon v3 payload.
+
+### 2026-07-10 — GPS Integration Architecture Review
+
+**Task:** Design GPS (GY-GPS6MV2 / NEO-6M) integration into Saturn LoRa Tracker.
+
+**Key findings:**
+- GPS driver already exists (`gps.c/h`) with USART2 polled RX + GPGGA parsing — Dorn built this previously.
+- `gps_init()` and `gps_poll()` already wired into `main.c` Reset_Handler and main loop.
+- USART2 registers defined locally in gps.c, not in stm32u0.h — cosmetic inconsistency.
+- **AF discrepancy:** hw_pins.h says AF7, gps.c programs AF4. STM32U073 datasheet (RM0503) suggests AF1 for PA2/PA3→USART2. Must verify on hardware before changing.
+- **Power gap:** PA15 (SENSE_LDO_EN) controls GPS LDO but is never driven high in init. GPS module likely has no power. This is the #1 bug.
+- **Beacon gap:** GPS lat/lon/alt not yet in beacon payload. Designed v5 format: +12 bytes (9→21 total), backward compatible via length-based parsing.
+- No separate usart2.c needed — USART2 has one consumer (GPS), consistent with SPI/I2C pattern.
+- Polled RX adequate: 960 B/s at 9600 baud, 8-byte FIFO, main loop < 1ms — no ISR needed.
+- GPS fix is optional in beacon: `gps_flags` byte signals fix validity + module presence.
+
+**Decision record:** `.squad/decisions/inbox/guilliman-gps-architecture.md`
+**Actions assigned:** PA15 power-on (Dorn), beacon v5 (Dorn), AF verification (Brostin), payload size check (Khan).
