@@ -107,7 +107,11 @@ static void beaconHandler(void) {
             pkt.data[4] = (uint8_t)(bat_mv & 0xFF);
             pkt.data[5] = (uint8_t)(bat_mv >> 8);
             pkt.data[6] = chg;
-            pkt.length = 4 + 7;  /* header + 7 bytes telemetry */
+            /* v4: append remote radio config so base can see what tx_pwr/sf
+             * the field device is currently using. */
+            pkt.data[7] = radio_get_tx_power();
+            pkt.data[8] = radio_get_datarate();
+            pkt.length = 4 + 9;  /* header + 9 bytes telemetry (v4) */
 
             write_packet(&pTxBuf, &pkt);
         }
@@ -156,7 +160,19 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             data_len = pkt->length - PACKET_HEADER_SIZE;
         uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
         uint8_t app_off = tbl_bytes;
-        if (data_len >= app_off + 7) {
+        if (data_len >= app_off + 9) {
+            /* v4: i_ma(2) + bus(2) + bat(2) + chg(1) + tx_pwr(1) + sf(1) */
+            int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
+            uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
+            uint16_t bat   = pkt->data[app_off+4] | ((uint16_t)pkt->data[app_off+5] << 8);
+            uint8_t  chg   = pkt->data[app_off+6];
+            uint8_t  txp   = pkt->data[app_off+7];
+            uint8_t  sf    = pkt->data[app_off+8];
+            snprintf(buf, sizeof(buf),
+                     "[BEACON] i_ma=%d bus=%u bat=%u chg=%u tx_pwr=%u sf=%u entries=%u\n",
+                     i_ma, bus, bat, chg, txp, sf, pkt->mesh_tbl_entries);
+            print(buf);
+        } else if (data_len >= app_off + 7) {
             /* New format: i_ma(2,signed) + bus(2) + bat(2) + chg(1) */
             int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
             uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
