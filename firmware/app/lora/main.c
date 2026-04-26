@@ -229,6 +229,79 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
         if (buffer_full(txbuf) != GLOB_ERROR_BUFFER_FULL)
             write_packet(txbuf, &resp);
     }
+
+    /* Handle CMD_CFG on the field device: send CMD_ACK first, THEN apply
+     * the new setting (so the ACK still goes out at the old power/SF and
+     * is heard by the base). RAM-only — flash is not touched, so a reset
+     * reverts to the configured defaults. */
+    if (pkt->control_app == CMD_CFG) {
+        uint8_t data_len = 0;
+        if (pkt->length > PACKET_HEADER_SIZE)
+            data_len = pkt->length - PACKET_HEADER_SIZE;
+        uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
+        uint8_t off = tbl_bytes;
+
+        uint8_t op = 0, new_pwr = radio_get_tx_power(), new_sf = radio_get_datarate();
+        uint8_t status = 1;  /* 0=ok, 1=invalid */
+
+        if (data_len >= off + 2) {
+            op = pkt->data[off];
+            if (op == 0x01 && data_len >= off + 2) {
+                uint8_t v = pkt->data[off + 1];
+                if (v >= 1 && v <= 22) { new_pwr = v; status = 0; }
+            } else if (op == 0x02 && data_len >= off + 2) {
+                uint8_t v = pkt->data[off + 1];
+                if (v >= 5 && v <= 12) { new_sf = v; status = 0; }
+            } else if (op == 0x03 && data_len >= off + 3) {
+                uint8_t p = pkt->data[off + 1];
+                uint8_t s = pkt->data[off + 2];
+                if (p >= 1 && p <= 22 && s >= 5 && s <= 12) {
+                    new_pwr = p; new_sf = s; status = 0;
+                }
+            }
+        }
+
+        /* Build CMD_ACK reply */
+        Packet ack;
+        memset(&ack, 0, sizeof(Packet));
+        ack.pOwner = NET;
+        ack.pktDir = OUTGOING;
+        ack.control_app = CMD_ACK;
+        ack.data[0] = op;
+        ack.data[1] = status;
+        ack.data[2] = new_pwr;
+        ack.data[3] = new_sf;
+        ack.length = 4 + 4;
+        if (buffer_full(txbuf) != GLOB_ERROR_BUFFER_FULL)
+            write_packet(txbuf, &ack);
+
+        /* Apply AFTER queueing the ACK (RAM-only). */
+        if (status == 0) {
+            if (op == 0x01 || op == 0x03) radio_set_tx_power(new_pwr);
+            if (op == 0x02 || op == 0x03) radio_set_datarate(new_sf);
+            print("[CFG] applied\n");
+        } else {
+            print("[CFG] rejected (invalid value)\n");
+        }
+    }
+
+    /* Print CMD_ACK on the base station so the operator sees confirmation. */
+    if (pkt->control_app == CMD_ACK) {
+        uint8_t data_len = 0;
+        if (pkt->length > PACKET_HEADER_SIZE)
+            data_len = pkt->length - PACKET_HEADER_SIZE;
+        uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
+        uint8_t off = tbl_bytes;
+        if (data_len >= off + 4) {
+            char cbuf[96];
+            snprintf(cbuf, sizeof(cbuf),
+                     "[CMD_ACK] from=%u op=%u status=%u tx_pwr=%u sf=%u\n",
+                     pkt->source_adr,
+                     pkt->data[off], pkt->data[off+1],
+                     pkt->data[off+2], pkt->data[off+3]);
+            print(cbuf);
+        }
+    }
 }
 
 /* ---- HardFault handler ---- */
