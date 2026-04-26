@@ -141,10 +141,12 @@ static void app_outgoing(Packet *pkt, PacketBuffer *txbuf) {
 
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
     /* Print received packet info */
-    char buf[128];
-    snprintf(buf, sizeof(buf), "[RX] src=%u dst=%u rssi=%d prssi=%d type=%u seq=%u len=%u\n",
-             pkt->source_adr, pkt->destination_adr, pkt->rssi,
-             pkt->prssi, pkt->control_app, pkt->sequence_num, pkt->length);
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "[RX] src=%u dst=%u rssi=%d prssi=%d snr=%d sf=%u freq=%lu type=%u seq=%u len=%u\n",
+             pkt->source_adr, pkt->destination_adr, pkt->rssi, pkt->prssi,
+             pkt->snr, radio_get_datarate(), (unsigned long)radio_get_channel(),
+             pkt->control_app, pkt->sequence_num, pkt->length);
     print(buf);
 
     /* Decode beacon telemetry */
