@@ -153,3 +153,40 @@ None of the 10 skills were skipped — all modules warranted their own reusable 
 **Build clean:** 29420 bytes text, 108 bytes data, 2240 bytes BSS. Zero compiler warnings. All register addresses and APIs verified against source — no fabrications.
 
 **Readiness:** Ready for flash deployment.
+
+### 2026-07-25 — GPS Baud Fix + VTOR Discovery
+
+**Issue:** After DFU reflash, GPS reported `sentences=0` despite the module actively transmitting (PA3 probe: transitions=2876, FE=1 in ISR). The `set gps baud 4800` command failed to parse.
+
+**Root Cause — VTOR NOT SET AFTER DFU BOOT (CRITICAL):**
+The STM32U073 has `__VTOR_PRESENT=1` (Cortex-M0+ with VTOR). When the DFU bootloader (`dfu-util -s :leave`) jumps back to the app's Reset_Handler, VTOR still points to the system bootloader's vector table (0x1FFF0000 area). Our vector table at 0x08000000 was never registered. Result: ALL interrupts vectored to the bootloader's table, and our `USART2_IRQHandler` never executed.
+
+**Diagnostic trail that led to discovery:**
+1. Added ISR counters (`isr_calls`, `rxne_count`, `fe_count`) — ISR calls=0 confirmed the ISR never fired
+2. Verified NVIC_ISER=0x10000000 (bit 28 correct), CR1=0x0000002D (RXNEIE set), BRR=1666 (9600 baud)
+3. Added polling fallback in gps_poll() — caught rxne=1 proving USART2 hardware WAS receiving
+4. Deduced VTOR mismatch: bootloader sets VTOR to system memory, never restores to Flash on `:leave`
+
+**Fix:** Added `SCB_VTOR = 0x08000000u;` as FIRST line of Reset_Handler. Result: ISR calls=9340, rxne=9344, sentences=141, fix=1, sats=9 — immediate GPS fix.
+
+**Additional fixes applied:**
+1. **FE/NE clearing in ISR** — USART2_ICR now clears FECF+NECF alongside ORECF
+2. **RXNEIE restored in gps_set_baud()/gps_set_af()** — both were missing USART_CR1_RXNEIE
+3. **gps_probe_pa3() restores USART2** — re-enables AF mode + USART2 + RXNEIE after probing
+4. **Auto-baud recovery** — if sentences=0 and fe_count>10 after 3s, switches to 4800 baud
+5. **`get gps reinit` command** — allows GPS recovery without full board reset
+6. **Monotonic `get_tick_ms()` timer** — for auto-baud timing
+7. **Polling fallback in gps_poll()** — drains USART2 directly as belt-and-suspenders
+
+**Defines added to stm32u0.h:**
+- `USART_ISR_FE (1u << 1)`, `USART_ISR_NE (1u << 2)`
+- `USART_ICR_FECF (1u << 1)`, `USART_ICR_NECF (1u << 2)`
+
+**Key Lessons:**
+1. **VTOR MUST be set in Reset_Handler** — on any STM32 with `__VTOR_PRESENT=1` that uses DFU bootloader. The bootloader sets VTOR to system memory and doesn't restore it on `:leave`. Without this, polling works but ALL interrupts are dead.
+2. **IRQ 28 = USART2_LPUART2 on STM32U073** — confirmed via official CMSIS header `stm32u073xx.h`. The combined USART2+LPUART2 interrupt is at position 28.
+3. **FE can be sticky** — without explicit ICR clearing, a single framing error during GPS power-up persists indefinitely in USART2_ISR
+4. **Polling fallback is essential** — the ring buffer ISR is the primary path, but polling in gps_poll() provides resilience against ISR failures
+5. **GPS worked previously because the board was power-on reset** — VTOR defaults to 0x00000000 (maps to Flash) at POR. The bug only manifests after DFU bootloader return.
+
+**Verified on hardware:** sentences=141, fix=1, sats=9, lat=56.318974, lon=10.047383, alt=43m. Both ACM0 and ACM1 flashed with identical binary.

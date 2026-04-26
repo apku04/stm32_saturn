@@ -679,3 +679,57 @@ USB CDC init (PA11/PA12 AF10) has no pin overlap with GPS (PA2/PA3). USB enumera
 ## Summary
 
 Six fixes, zero defects found. Every register address, pin number, AF value, ISR name, and payload offset verified against source files. Dorn's work is clean. Ready for flash deployment.
+# Decision: GPS VTOR + Baud Fix
+
+**Author:** Dorn (STM32 Expert)  
+**Date:** 2026-07-25  
+**Status:** IMPLEMENTED + VERIFIED ON HARDWARE
+
+## Problem
+
+After DFU reflash, GPS reported `sentences=0`. The GPS module was confirmed transmitting (PA3 probe: 2876 transitions, FE=1 in USART2_ISR). The ISR-based ring buffer received zero bytes.
+
+## Root Cause
+
+**VTOR (Vector Table Offset Register) was not set in Reset_Handler.** The STM32U073 Cortex-M0+ has `__VTOR_PRESENT=1`. After DFU bootloader returns via `:leave`, VTOR still points to the system bootloader's vector table in ROM. Our app's vector table at 0x08000000 was never registered. All interrupts (including USART2 IRQ 28) vectored to the bootloader's table — dead handlers.
+
+GPS worked in earlier sessions because those boots were power-on resets (VTOR defaults to 0x00000000 → Flash). The DFU return path doesn't reset VTOR.
+
+## Fix
+
+### Critical Fix — VTOR
+```c
+void Reset_Handler(void) {
+    SCB_VTOR = 0x08000000u;  // FIRST LINE — point VTOR to our vector table
+    ...
+}
+```
+
+### GPS Driver Fixes (gps.c)
+1. ISR clears FE+NE flags (were sticky, blocking further reception awareness)
+2. `gps_set_baud()`/`gps_set_af()` restore RXNEIE (were dropping it)
+3. `gps_probe_pa3()` restores PA3 AF mode + USART2 after probing
+4. Auto-baud: after 3s with fe_count>10 and sentences=0, tries 4800 baud
+5. Polling fallback: gps_poll() drains USART2_RDR directly as backup
+
+### System Additions
+- `get gps reinit` terminal command
+- `get_tick_ms()` monotonic timer
+- ISR diagnostic counters (calls, rxne, fe)
+- USART_ISR_FE/NE and USART_ICR_FECF/NECF defines in stm32u0.h
+
+## Verification
+
+```
+GPS sentences=141 fix=1 sats=9 lat=56.318974 lon=10.047383 alt=43m
+GPS ISR: calls=9340 rxne=9344 fe=1 CR1=0x0000002D BRR=1666 NVIC=0x10000000
+```
+
+Both boards (ACM0 MAC=38, ACM1) flashed with same binary.
+
+## Impact
+
+- **VTOR fix affects ALL interrupts**, not just GPS. Any future peripheral using interrupts would have been broken after DFU reflash without this fix.
+- The auto-baud and polling fallback provide resilience but were not the primary fix.
+
+---
