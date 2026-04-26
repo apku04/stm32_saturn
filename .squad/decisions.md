@@ -733,3 +733,90 @@ Both boards (ACM0 MAC=38, ACM1) flashed with same binary.
 - The auto-baud and polling fallback provide resilience but were not the primary fix.
 
 ---
+
+### 5. Lion Review Verdict — GPS Driver + VTOR Fix
+
+**Date:** 2026-04-26  
+**Reviewer:** Lion (Hallucination Detective)  
+**Subject:** Dorn's GPS driver fixes + VTOR boot fix  
+**Verdict:** ✅ **APPROVED** — all checks pass, zero defects found
+
+---
+
+## Verification Summary
+
+### 1. main.c — SCB_VTOR
+
+- **Line 353:** `SCB_VTOR = 0x08000000u;` is the **first executable statement** in `Reset_Handler` (line 351), before .data/.bss copy, before `clock_init()`, `led_init()`, and all other init calls. ✅
+- **SCB_VTOR macro** (stm32u0.h line 24): defined at `0xE000ED08` — correct per ARM Cortex-M0+ TRM (ARMv6-M Architecture Reference Manual, B3.2.5). ✅
+- **No regressions:** Rest of main.c unchanged from prior approved state. `gps_poll()` correctly called in main loop (line 404). ✅
+
+### 2. gps.c — USART2_IRQHandler
+
+- **FE/NE clearing** (lines 230-233): ISR checks `USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE`, clears via `USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NECF`. ✅
+- **Bit positions verified against stm32u0.h and RM0503:**
+  - `USART_ISR_FE` = bit 1, `USART_ISR_NE` = bit 2 ✅
+  - `USART_ICR_FECF` = bit 1, `USART_ICR_NECF` = bit 2 ✅
+  - `USART_ICR_ORECF` = bit 3 ✅
+
+### 3. gps.c — RXNEIE Restoration
+
+- **gps_set_baud()** (line 48): `USART_CR1_RXNEIE | USART_CR1_RE | USART_CR1_TE | USART_CR1_UE` ✅
+- **gps_set_af()** (line 60): same CR1 enable pattern. ✅
+- **gps_probe_pa3()** (line 101): same CR1 enable pattern after restoring PA3. ✅
+
+### 4. gps.c — gps_probe_pa3() Restore
+
+- **PA3 MODER** (lines 92-94): cleared to 00, then set to `2u << 6` = `10` (AF mode). ✅
+- **PA3 PUPDR** (lines 96-98): cleared to 00, then set to `1u << 6` = `01` (pull-up). ✅
+- **USART2 re-enabled** (line 101) with RXNEIE. ✅
+
+### 5. gps.c — Auto-Baud Logic
+
+- **Guard:** `!baud_switched` (line 300) — tries 4800 exactly **once**, sets `baud_switched = 1` (line 303). No oscillation possible. ✅
+- **Trigger conditions:** `fix.sentences == 0 && fe_count > 10 && elapsed >= 3000` — reasonable heuristic. ✅
+- **get_tick_ms()** usage (line 301): `get_tick_ms() - init_tick` — correct unsigned subtraction, handles wrap. ✅
+- **Re-enable** (line 310): includes `USART_CR1_RXNEIE`. ✅
+
+### 6. gps.c — Polling Fallback
+
+- **RXNE check before RDR read** (line 253): `if (!(sr & USART_ISR_RXNE)) break;` — no garbage reads. ✅
+- **Error flags cleared** (lines 249-251) before RXNE check — correct ordering. ✅
+- **Ring buffer write** (lines 255-259): same safe pattern as ISR. ✅
+
+### 7. gps.c — No Magic Numbers
+
+All register operations use named macros from stm32u0.h. No raw hex addresses. ✅
+
+### 8. stm32u0.h — New Defines
+
+| Macro | Value | RM0503 Reference | Status |
+|---|---|---|---|
+| `SCB_VTOR` | `0xE000ED08` | ARM Cortex-M0+ SCB | ✅ |
+| `USART_ISR_FE` | bit 1 | RM0503 §29.8.8 | ✅ |
+| `USART_ISR_NE` | bit 2 | RM0503 §29.8.8 | ✅ |
+| `USART_ICR_FECF` | bit 1 | RM0503 §29.8.9 | ✅ |
+| `USART_ICR_NECF` | bit 2 | RM0503 §29.8.9 | ✅ |
+
+No conflicts with existing macros. All new defines are in the USART section block (lines 271-283). ✅
+
+### 9. timer.c/h — get_tick_ms()
+
+- **Implementation** (timer.c lines 67-70): returns `monotonic_ms`, which increments in `timer_poll()` (line 37) on each SysTick COUNTFLAG. ✅
+- **Monotonic:** `monotonic_ms` only ever increments. Never reset (unlike `delayMs_t`). ✅
+- **Uses existing SysTick infrastructure** — no new timers. ✅
+- **Header** (timer.h line 15): `uint32_t get_tick_ms(void);` — correctly declared. ✅
+
+### 10. terminal.c — `get gps reinit`
+
+- **Line 278:** `argc >= 3 && strcmp(argv[2], "reinit") == 0` — correct indexing (`argv[0]="get"`, `argv[1]="gps"`, `argv[2]="reinit"`). ✅
+- **Calls `gps_init()`** (line 279) — the full initialization function, not a partial reinit. ✅
+- **Returns early** (line 281) after printing confirmation — no fallthrough. ✅
+
+---
+
+## Conclusion
+
+All 10 verification points pass. No fabricated register addresses, no invented API functions, no wrong bit positions, no protocol violations. Every claim in the commit description is verified against actual source files and RM0503/ARM TRM references.
+
+**APPROVED** for merge.
