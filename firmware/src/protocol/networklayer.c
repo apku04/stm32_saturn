@@ -111,7 +111,7 @@ static bool process_received_beacon(Packet *pkt) {
     }
 
     uint8_t source_address = pkt->source_adr;
-    int8_t signal_strength = pkt->prssi;
+    int16_t signal_strength = pkt->prssi;
     if (signal_strength < SIGNAL_STRENGTH_THRESHOLD) return false;
 
     uint8_t my_addr = get_mac_address();
@@ -192,8 +192,10 @@ static GLOB_RET network_outgoing(Packet *pkt) {
     pkt->mesh_dest = Nlme.mesh_dest;
     pkt->mesh_src = get_mac_address();
 
-    if (pkt->control_app == BEACON || pkt->control_app == PING || pkt->control_app == PONG) {
-        if (pkt->control_app == PING || pkt->control_app == PONG)
+    if (pkt->control_app == BEACON || pkt->control_app == PING || pkt->control_app == PONG ||
+        pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK) {
+        if (pkt->control_app == PING || pkt->control_app == PONG ||
+            pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK)
             pkt->TTL = 0;
         if (pkt->control_app == BEACON)
             age_routing_table();
