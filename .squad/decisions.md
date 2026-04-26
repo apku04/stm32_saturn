@@ -527,3 +527,101 @@ monitor parsing all technically correct despite wrong pins.
 4. ✋ Full two-board integration test
 
 **Proceed:** Unblock after Dorn commits fixes + Brostin flashes + verifies NMEA reception on real hardware.
+
+---
+
+### 16. Dorn — GPS Driver Fix + Beacon Integration
+
+**Date:** 2026-07-25  
+**Status:** Implemented, build clean  
+**Authority:** Dorn (STM32 Expert)  
+**Files changed:** `firmware/src/driver/gps.c`, `firmware/include/stm32u0.h`, `firmware/app/lora/main.c`
+
+## Summary of Changes
+
+### Fix 1 — SENSE_LDO_EN Power Sequencing (CRITICAL)
+- PA15 configured as push-pull output, driven HIGH in `gps_init()` before USART2 setup
+- 100ms delay for LDO + GPS module power-up stabilisation
+- Without this, GPS module has no power and produces no NMEA data
+
+### Fix 2 — AF4 → AF7 (CRITICAL)
+- PA2/PA3 alternate function changed from AF4 to AF7 (RM0503 Table 20)
+- AF4 on PA2/PA3 routes to LPUART2/USART3, not USART2 — UART was electrically dead
+- Now uses hw_pins.h macros (GPS_RX_PIN, GPS_TX_PIN) instead of magic numbers
+
+### Fix 3 — Non-blocking GPS Poll
+- `gps_poll()` now drains from ISR ring buffer, returns immediately if empty
+- No blocking waits in GPS path — USB CDC remains fully functional
+
+### Fix 4 — USART2 RXNE Interrupt + Ring Buffer
+- 64-byte ring buffer captures USART2 bytes in ISR context
+- ISR clears ORE (overrun) flag to prevent USART stall
+- NVIC enabled for USART2 (IRQ 28)
+- Vector table extended to 45 entries to cover USART2 slot
+- Prevents NMEA corruption during SX1262 blocking radio operations
+
+### Fix 5 — GPS in Beacon Payload
+- Beacon v5: 18 bytes total (was 9)
+- pkt.data[9..12] = lat_udeg (int32_t, LE, micro-degrees)
+- pkt.data[13..16] = lon_udeg (int32_t, LE, micro-degrees)
+- pkt.data[17] = fix_valid (0 or 1)
+- Sends zeros with fix_valid=0 until GPS acquires fix
+
+### Fix 6 — USART2 Defs Moved to stm32u0.h
+- Removed local USART2 register definitions from gps.c
+- Added canonical definitions in stm32u0.h with all needed bit masks
+
+## Build Status
+- ✅ Clean build (zero errors, zero compiler warnings)
+- Text: 29420 bytes, Data: 108 bytes, BSS: 2240 bytes
+- Growth: ~7KB from extended vector table + ISR + GPS payload
+
+## Open Questions
+1. **Beacon receiver parsing:** `app_incoming()` in main.c does not yet decode the GPS fields from received beacons (v5 format). Needs a v5 decoder branch.
+2. **lora_monitor.py:** Python monitor tool may need update to parse GPS fields from v5 beacon.
+3. **GPS module validation:** Needs hardware test with actual GPS module connected to H3 header.
+4. **gps_set_af() helper:** Still uses hardcoded pin numbers (2*4, 3*4) — could use hw_pins.h macros for consistency. Low priority.
+
+---
+
+### 17. Decision: OTA Flash Test Commands & Pytest Suite
+
+**Date:** 2026-04-24
+**Author:** Russ (Tester)
+**Status:** Implemented, awaiting hardware validation
+**Related:** Dorn's `flash_ota.c` / `flash_ota.h`
+
+## What
+
+Added 7 terminal commands (`get ota bank`, `set ota erase`, `set ota write`, `get ota read`, `get ota pending`, `set ota pending`, `set ota clear`) and 7 pytest test cases in `TestOTAFlash` class.
+
+## Key Decisions
+
+1. **`set ota write` takes exactly 16 hex chars (8 bytes)** — matches `ota_write()` 8-byte alignment requirement. No partial writes. If the caller needs to write more, they issue multiple commands.
+
+2. **`get ota read` caps at 16 bytes** — prevents buffer overflows in the serial response and keeps the hex output readable. Enough for test verification.
+
+3. **Hex parsing: byte-at-a-time loop, not strtoul on full string** — avoids endian confusion and works cleanly on both little-endian (STM32) and the test host.
+
+4. **Erase tests use `_read_until_idle()` with 10s timeout** — `send_command()` would timeout at 5s default; erasing 31 pages takes several seconds on real hardware.
+
+5. **Alignment test expects `err=-2`** — maps to `OTA_ERR_ALIGN` in `flash_ota.h`. This is tested explicitly rather than relying on generic "FAIL" match.
+
+6. **Pending lifecycle test includes erase of config page** — `ota_clear_pending()` erases page 63 and rewrites all non-OTA config slots. Test verifies this doesn't corrupt device config.
+
+7. **Skipped `test_ota_write_requires_erase`** — flash write-without-erase behavior is hardware-specific and unreliable to test over serial. Replaced with `test_ota_full_roundtrip` which covers the practical write/read cycle.
+
+## Files Changed
+
+- `firmware/src/system/terminal.c` — OTA command dispatch + `#include "flash_ota.h"`
+- `firmware/app/lora/test/test_target_test.py` — `TestOTAFlash` class (7 tests)
+
+## Build Impact
+
+- Text: 22264 → 25520 bytes (+3256 bytes for OTA commands + flash_ota driver linkage)
+- No new warnings
+
+## Open Items
+
+- Hardware validation pending (need board + DFU flash of new binary)
+- `ota_clear_pending()` rewrites all config page slots — if a slot was previously written (not 0xFF), it survives. If config was uninitialized, all slots read as 0xFF and get skipped. This is correct but subtle.
