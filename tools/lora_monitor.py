@@ -37,9 +37,16 @@ PKT_TYPES = {
     "2": "ACK",
     "3": "PING",
     "4": "PONG",
+    "5": "CMD_CFG",
+    "6": "CMD_ACK",
 }
 
 # Regex patterns for parsing firmware output
+# v2 format adds snr/sf/freq (range-test build)
+RX_PATTERN_V2 = re.compile(
+    r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+prssi=(-?\d+)\s+"
+    r"snr=(-?\d+)\s+sf=(\d+)\s+freq=(\d+)\s+type=(\d+)\s+seq=(\d+)\s+len=(\d+)"
+)
 RX_PATTERN = re.compile(
     r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+prssi=(-?\d+)\s+"
     r"type=(\d+)\s+seq=(\d+)\s+len=(\d+)"
@@ -47,6 +54,10 @@ RX_PATTERN = re.compile(
 # Also match older firmware without prssi/seq
 RX_PATTERN_LEGACY = re.compile(
     r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+type=(\d+)\s+len=(\d+)"
+)
+BEACON_PATTERN_V4 = re.compile(
+    r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+"
+    r"tx_pwr=(\d+)\s+sf=(\d+)\s+entries=(\d+)"
 )
 BEACON_PATTERN_V3 = re.compile(
     r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+entries=(\d+)"
@@ -108,9 +119,9 @@ class LoRaMonitor:
         pkt_frame = ttk.Frame(nb)
         nb.add(pkt_frame, text="Packets")
 
-        cols = ("time", "src", "dst", "type", "seq", "rssi", "prssi", "len", "info")
+        cols = ("time", "src", "dst", "type", "seq", "rssi", "prssi", "snr", "sf", "len", "info")
         self.pkt_tree = ttk.Treeview(pkt_frame, columns=cols, show="headings", height=14)
-        for c, w in zip(cols, (70, 40, 40, 70, 50, 50, 50, 40, 380)):
+        for c, w in zip(cols, (70, 40, 40, 70, 50, 50, 50, 40, 30, 40, 320)):
             self.pkt_tree.heading(c, text=c.upper())
             self.pkt_tree.column(c, width=w, minwidth=30)
         self.pkt_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
@@ -122,9 +133,9 @@ class LoRaMonitor:
         bcn_frame = ttk.Frame(nb, padding=8)
         nb.add(bcn_frame, text="Beacons")
 
-        bcn_cols = ("time", "src", "rssi", "prssi", "bus_v", "i_ma", "p_mw", "charge", "entries")
+        bcn_cols = ("time", "src", "rssi", "prssi", "snr", "tx_pwr", "sf", "bus_v", "i_ma", "p_mw", "charge", "entries")
         self.bcn_tree = ttk.Treeview(bcn_frame, columns=bcn_cols, show="headings", height=14)
-        for c, w in zip(bcn_cols, (70, 50, 50, 50, 80, 80, 80, 80, 60)):
+        for c, w in zip(bcn_cols, (70, 50, 50, 50, 40, 50, 30, 70, 70, 70, 70, 50)):
             self.bcn_tree.heading(c, text=c.upper().replace("_", " "))
             self.bcn_tree.column(c, width=w, minwidth=30)
         self.bcn_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
@@ -244,13 +255,16 @@ class LoRaMonitor:
                     self.root.after(0, self._log, line + "\n")
 
                     # Check for [BEACON] line (follows a [RX] with type=0)
-                    bcn_v3 = BEACON_PATTERN_V3.match(line)
-                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not bcn_v3 else None
-                    bcn = BEACON_PATTERN.match(line) if not bcn_v3 and not bcn_v2 else None
-                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not bcn_v3 and not bcn_v2 and not bcn else None
-                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not bcn_v3 and not bcn_v2 and not bcn and not bcn_leg else None
-                    if bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
-                        beacon_data = self._parse_beacon(bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min, is_v3=bool(bcn_v3))
+                    bcn_v4 = BEACON_PATTERN_V4.match(line)
+                    bcn_v3 = BEACON_PATTERN_V3.match(line) if not bcn_v4 else None
+                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not (bcn_v4 or bcn_v3) else None
+                    bcn = BEACON_PATTERN.match(line) if not (bcn_v4 or bcn_v3 or bcn_v2) else None
+                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not (bcn_v4 or bcn_v3 or bcn_v2 or bcn) else None
+                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not (bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg) else None
+                    if bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
+                        match = bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min
+                        version = "v4" if bcn_v4 else ("v3" if bcn_v3 else None)
+                        beacon_data = self._parse_beacon(match, version=version)
                         if pending_rx:
                             self.root.after(0, self._add_rx_packet, pending_rx, beacon_data)
                             pending_rx = None
@@ -261,12 +275,24 @@ class LoRaMonitor:
                         self.root.after(0, self._add_rx_packet, pending_rx, None)
                         pending_rx = None
 
-                    # Check for [RX] line
+                    # Check for [RX] line — v2 (with snr/sf/freq) first
+                    m = RX_PATTERN_V2.match(line)
+                    if m:
+                        pending_rx = {
+                            "src": m.group(1), "dst": m.group(2),
+                            "rssi": m.group(3), "prssi": m.group(4),
+                            "snr": m.group(5), "sf": m.group(6), "freq": m.group(7),
+                            "type": m.group(8), "seq": m.group(9),
+                            "len": m.group(10),
+                        }
+                        continue
+
                     m = RX_PATTERN.match(line)
                     if m:
                         pending_rx = {
                             "src": m.group(1), "dst": m.group(2),
                             "rssi": m.group(3), "prssi": m.group(4),
+                            "snr": "—", "sf": "—", "freq": "—",
                             "type": m.group(5), "seq": m.group(6),
                             "len": m.group(7),
                         }
@@ -277,6 +303,7 @@ class LoRaMonitor:
                         pending_rx = {
                             "src": m.group(1), "dst": m.group(2),
                             "rssi": m.group(3), "prssi": "—",
+                            "snr": "—", "sf": "—", "freq": "—",
                             "type": m.group(4), "seq": "—",
                             "len": m.group(5),
                         }
@@ -288,25 +315,35 @@ class LoRaMonitor:
             except Exception:
                 pass
 
-    def _parse_beacon(self, m, is_v3=False):
+    def _parse_beacon(self, m, version=None):
         groups = m.groups()
-        if is_v3 and len(groups) == 5:
+        if version == "v4" and len(groups) == 7:
+            # v4: i_ma, bus, bat, chg, tx_pwr, sf, entries
+            return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],
+                    "chg": groups[3], "tx_pwr": groups[4], "sf": groups[5],
+                    "entries": groups[6]}
+        if version == "v3" and len(groups) == 5:
             # V3: i_ma, bus, bat, chg, entries (current already in mA on the wire)
             return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],
-                    "chg": groups[3], "entries": groups[4]}
+                    "chg": groups[3], "tx_pwr": "—", "sf": "—",
+                    "entries": groups[4]}
         if len(groups) == 5:
             # V2: shunt(mV), bus, bat, chg, entries  — derive i_ma assuming 50mΩ shunt
             return {"i_ma": str(int(groups[0]) * 20), "bus": groups[1], "bat": groups[2],
-                    "chg": groups[3], "entries": groups[4]}
+                    "chg": groups[3], "tx_pwr": "—", "sf": "—",
+                    "entries": groups[4]}
         elif len(groups) == 4:
             return {"i_ma": "—", "bus": groups[1], "bat": groups[0],
-                    "chg": groups[2], "entries": groups[3]}
+                    "chg": groups[2], "tx_pwr": "—", "sf": "—",
+                    "entries": groups[3]}
         elif len(groups) == 2:
             return {"i_ma": "—", "bus": "—", "bat": groups[0],
-                    "chg": "—", "entries": groups[1]}
+                    "chg": "—", "tx_pwr": "—", "sf": "—",
+                    "entries": groups[1]}
         else:
             return {"i_ma": "—", "bus": "—", "bat": "—",
-                    "chg": "—", "entries": groups[0]}
+                    "chg": "—", "tx_pwr": "—", "sf": "—",
+                    "entries": groups[0]}
 
     # ---------------------------------------------------- Packet display
     def _add_rx_packet(self, rx, beacon):
@@ -325,11 +362,15 @@ class LoRaMonitor:
             else:
                 i_ma = "—"
                 p_mw = "—"
-            info = f"Bus={bus_v}  I={i_ma}  P={p_mw}  Charge={chg_s}  Routes={beacon['entries']}"
+            extra = ""
+            if beacon.get("tx_pwr", "—") != "—":
+                extra = f"  TxPwr={beacon['tx_pwr']}  SF={beacon['sf']}"
+            info = f"Bus={bus_v}  I={i_ma}  P={p_mw}  Charge={chg_s}  Routes={beacon['entries']}{extra}"
 
             # Add to beacon tree
             self.bcn_tree.insert("", 0, values=(
-                ts, rx["src"], rx["rssi"], rx["prssi"],
+                ts, rx["src"], rx["rssi"], rx["prssi"], rx.get("snr", "—"),
+                beacon.get("tx_pwr", "—"), beacon.get("sf", "—"),
                 bus_v, i_ma, p_mw, chg_s, beacon["entries"]
             ))
             # Trim beacon tree
@@ -340,7 +381,8 @@ class LoRaMonitor:
 
         self.pkt_tree.insert("", 0, values=(
             ts, rx["src"], rx["dst"], ptype, rx["seq"],
-            rx["rssi"], rx["prssi"], rx["len"], info
+            rx["rssi"], rx["prssi"], rx.get("snr", "—"), rx.get("sf", "—"),
+            rx["len"], info
         ))
         # Trim packet tree
         children = self.pkt_tree.get_children()
