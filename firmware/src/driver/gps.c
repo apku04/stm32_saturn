@@ -20,7 +20,7 @@
 #define USART2_IRQn  28u
 
 /* ---- Ring buffer for ISR-captured USART2 bytes ---- */
-#define RX_BUF_SIZE  64u
+#define RX_BUF_SIZE  256u
 static volatile uint8_t rx_buf[RX_BUF_SIZE];
 static volatile uint8_t rx_head;   /* ISR writes here */
 static volatile uint8_t rx_tail;   /* gps_poll reads here */
@@ -200,6 +200,26 @@ static int32_t parse_latlon(const char *s, char hemi, int deg_digits) {
     return udeg;
 }
 
+/* NMEA checksum: XOR all bytes between '$' and '*' (exclusive) */
+static int nmea_checksum_valid(const char *sentence) {
+    if (!sentence || sentence[0] != '$') return 0;
+    const char *p = sentence + 1;
+    uint8_t calc = 0;
+    while (*p && *p != '*') calc ^= (uint8_t)*p++;
+    if (*p != '*') return 0;
+    /* Parse two hex digits after '*' */
+    uint8_t hi = (uint8_t)p[1], lo = (uint8_t)p[2];
+    if (hi >= '0' && hi <= '9') hi -= '0';
+    else if (hi >= 'A' && hi <= 'F') hi -= 'A' - 10;
+    else if (hi >= 'a' && hi <= 'f') hi -= 'a' - 10;
+    else return 0;
+    if (lo >= '0' && lo <= '9') lo -= '0';
+    else if (lo >= 'A' && lo <= 'F') lo -= 'A' - 10;
+    else if (lo >= 'a' && lo <= 'f') lo -= 'a' - 10;
+    else return 0;
+    return calc == ((hi << 4) | lo);
+}
+
 static void parse_gga(char *s) {
     /* $GPGGA,time,lat,N/S,lon,E/W,fix,sats,hdop,alt,M,...*csum */
     char *fields[12] = {0};
@@ -220,6 +240,32 @@ static void parse_gga(char *s) {
     fix.sats        = (uint8_t)atoi(fields[7]);
     fix.alt_m       = (int16_t)atoi(fields[9]);
     fix.valid       = (fix.fix_quality > 0);
+}
+
+/* $GPRMC / $GNRMC parser — update lat/lon/time when status='A' */
+static void parse_rmc(char *s) {
+    /* $GPRMC,HHMMSS.ss,A,LLLL.LL,N,YYYYY.YY,E,spd,cog,DDMMYY,...*cs */
+    char *fields[14] = {0};
+    int n = 0;
+    char *p = s;
+    fields[n++] = p;
+    while (*p && n < 14) {
+        if (*p == ',') { *p = 0; fields[n++] = p + 1; }
+        else if (*p == '*') { *p = 0; break; }
+        p++;
+    }
+    if (n < 7) return;
+
+    if (fields[2][0] == 'A') {
+        fix.time_hms = (uint32_t)strtoul(fields[1], NULL, 10);
+        fix.lat_udeg = parse_latlon(fields[3], fields[4][0], 2);
+        fix.lon_udeg = parse_latlon(fields[5], fields[6][0], 3);
+        fix.valid    = 1;
+    } else {
+        fix.valid    = 0;
+        fix.lat_udeg = 0;
+        fix.lon_udeg = 0;
+    }
 }
 
 /* ---- USART2 ISR: capture bytes into ring buffer ---- */
@@ -279,11 +325,17 @@ void gps_poll(void) {
                 memcpy(last_nmea, line_buf, line_len + 1);
                 last_nmea_len = line_len;
                 fix.sentences++;
-                /* parse known sentences (parser is destructive) */
-                if (line_len >= 6 && memcmp(line_buf, "$GPGGA", 6) == 0) {
+                /* Verify NMEA checksum before parsing */
+                if (!nmea_checksum_valid(line_buf)) {
+                    /* bad checksum — discard */
+                } else if (line_len >= 6 && memcmp(line_buf, "$GPGGA", 6) == 0) {
                     parse_gga(line_buf);
                 } else if (line_len >= 6 && memcmp(line_buf, "$GNGGA", 6) == 0) {
                     parse_gga(line_buf);
+                } else if (line_len >= 6 && memcmp(line_buf, "$GPRMC", 6) == 0) {
+                    parse_rmc(line_buf);
+                } else if (line_len >= 6 && memcmp(line_buf, "$GNRMC", 6) == 0) {
+                    parse_rmc(line_buf);
                 }
             }
             line_len = 0;

@@ -15,10 +15,11 @@ void recieveMode(void) {
 
 GLOB_RET transmitFrame(Packet *pkt) {
     uint8_t payload[70];
-    size_t size_to_copy = sizeof(Packet) - offsetof(Packet, destination_adr);
-    memcpy(payload, (uint8_t *)pkt + offsetof(Packet, destination_adr), size_to_copy);
+    uint8_t tx_len = pkt->length;
+    if (tx_len > sizeof(payload)) tx_len = sizeof(payload);
+    memcpy(payload, (uint8_t *)pkt + offsetof(Packet, destination_adr), tx_len);
 
-    GLOB_RET errorCode = radio_send(payload, size_to_copy);
+    GLOB_RET errorCode = radio_send(payload, tx_len);
 
     if (0 == errorCode) {
         if (pkt->control_app == PAYLOAD && pkt->pktDir != RETX) {
