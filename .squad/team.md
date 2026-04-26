@@ -19,6 +19,7 @@
 | Khan | LoRa Expert | .squad/agents/khan/charter.md | active |
 | Lion | Reviewer | .squad/agents/lion/charter.md | active |
 | Russ | Tester | .squad/agents/russ/charter.md | active |
+| Perturabo | The Critic | .squad/agents/perturabo/charter.md | active |
 | Scribe | Scribe | .squad/agents/scribe/charter.md | active |
 | Ralph | Work Monitor | — | active |
 

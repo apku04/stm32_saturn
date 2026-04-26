@@ -1,14 +1,15 @@
 {
   "version": 1,
   "entries": [
-    {"persistent_name": "Guilliman",      "role": "Architect",       "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Guilliman",  "role": "Architect",       "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
     {"persistent_name": "Ferrus",     "role": "PCB Expert",      "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
-    {"persistent_name": "Corax",     "role": "RPi GPIO Expert", "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
-    {"persistent_name": "Dorn",   "role": "STM32 Expert",    "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
-    {"persistent_name": "Khan",   "role": "LoRa Expert",     "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
-    {"persistent_name": "Lion", "role": "Reviewer",        "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
-    {"persistent_name": "Russ",   "role": "Tester",          "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
-    {"persistent_name": "Scribe",    "role": "Scribe",          "universe": "exempt",       "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
-    {"persistent_name": "Ralph",     "role": "Work Monitor",    "universe": "exempt",       "created_at": "2026-04-23", "legacy_named": false, "status": "active"}
+    {"persistent_name": "Corax",      "role": "RPi GPIO Expert", "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Dorn",       "role": "STM32 Expert",    "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Khan",       "role": "LoRa Expert",     "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Lion",       "role": "Reviewer",        "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Russ",       "role": "Tester",          "universe": "warhammer40k", "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Perturabo",  "role": "The Critic",      "universe": "warhammer40k", "created_at": "2026-04-26", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Scribe",     "role": "Scribe",          "universe": "exempt",       "created_at": "2026-04-23", "legacy_named": false, "status": "active"},
+    {"persistent_name": "Ralph",      "role": "Work Monitor",    "universe": "exempt",       "created_at": "2026-04-23", "legacy_named": false, "status": "active"}
   ]
 }

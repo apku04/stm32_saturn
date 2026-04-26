@@ -10,6 +10,7 @@
 | STM32 firmware, registers, drivers | Dorn | Peripheral init, bare-metal code, bug fixes |
 | LoRa driver, SX1262, MAC, beacon, protocol | Khan | Radio config, packet format, beacon payload |
 | Code review, hallucination detection | Lion | All firmware before declaring done |
+| Adversarial critique, design stress-test | Perturabo | Architecture proposals, protocol design, power/timing assumptions |
 | Test plans, validation, edge cases | Russ | Test procedures, lora_monitor validation |
 | Session logging, decisions | Scribe | Automatic — never needs routing |
 | Backlog, issue queue | Ralph | Monitoring work queue |
@@ -26,6 +27,7 @@
 | `squad:khan` | LoRa / radio / protocol work | Khan |
 | `squad:lion` | Review pass | Lion |
 | `squad:russ` | Testing / validation | Russ |
+| `squad:perturabo` | Adversarial critique | Perturabo |
 
 ## Rules
 
