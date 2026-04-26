@@ -10,6 +10,7 @@
 #include "stm32u0.h"
 
 static volatile uint32_t delayMs_t   = 0;
+static volatile uint32_t monotonic_ms = 0;
 volatile uint32_t difsTimer   = 0;
 volatile uint32_t ackTimer    = 0;
 volatile uint32_t slotTimer   = 0;
@@ -33,6 +34,7 @@ void timer_poll(void)
     if (SYST_CSR & (1 << 16)) {
         /* 1ms tick */
         delayMs_t++;
+        monotonic_ms++;
         difsTimer++;
         slotTimer++;
         ackTimer++;
@@ -60,4 +62,9 @@ void register_timer_cb(cb_timer cb)
 {
     beacon_cb    = cb;
     beacon_cb_en = 1;
+}
+
+uint32_t get_tick_ms(void)
+{
+    return monotonic_ms;
 }

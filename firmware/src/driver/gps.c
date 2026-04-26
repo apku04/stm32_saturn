@@ -24,6 +24,9 @@
 static volatile uint8_t rx_buf[RX_BUF_SIZE];
 static volatile uint8_t rx_head;   /* ISR writes here */
 static volatile uint8_t rx_tail;   /* gps_poll reads here */
+static volatile uint32_t fe_count; /* framing errors seen by ISR */
+static volatile uint32_t isr_calls; /* total ISR invocations */
+static volatile uint32_t rxne_count; /* total RXNE events */
 
 #define LINE_MAX 96
 
@@ -33,6 +36,8 @@ static char     last_nmea[LINE_MAX];
 static uint16_t last_nmea_len;
 static gps_fix_t fix;
 static uint8_t  raw_echo = 0;   /* if 1, print every byte to CDC */
+static uint32_t init_tick;       /* tick_ms at last gps_init/baud change */
+static uint8_t  baud_switched;   /* 1 = already tried 4800 fallback */
 
 void gps_set_raw_echo(uint8_t on) { raw_echo = on ? 1 : 0; }
 
@@ -40,8 +45,9 @@ void gps_set_baud(uint32_t baud) {
     if (baud == 0) return;
     USART2_CR1 = 0;                          /* disable to change BRR */
     USART2_BRR = 16000000u / baud;
-    USART2_CR1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_UE;
+    USART2_CR1 = USART_CR1_RXNEIE | USART_CR1_RE | USART_CR1_TE | USART_CR1_UE;
     line_len = 0;
+    init_tick = get_tick_ms();
 }
 
 void gps_set_af(uint8_t af) {
@@ -51,7 +57,7 @@ void gps_set_af(uint8_t af) {
     a &= ~((0xFu << (2 * 4)) | (0xFu << (3 * 4)));
     a |=  (((uint32_t)af << (2 * 4)) | ((uint32_t)af << (3 * 4)));
     GPIO_AFRL(GPIOA_BASE) = a;
-    USART2_CR1 = USART_CR1_RE | USART_CR1_TE | USART_CR1_UE;
+    USART2_CR1 = USART_CR1_RXNEIE | USART_CR1_RE | USART_CR1_TE | USART_CR1_UE;
     line_len = 0;
 }
 
@@ -80,7 +86,21 @@ uint32_t gps_probe_pa3(void) {
     }
     /* Pack: transitions in low 16 bits, low_count clamped to 16-bit upper */
     if (low_count > 0xFFFFu) low_count = 0xFFFFu;
-    return (low_count << 16) | (transitions & 0xFFFFu);
+    uint32_t result = (low_count << 16) | (transitions & 0xFFFFu);
+
+    /* Restore PA3 to AF mode (USART2_RX) */
+    uint32_t m2 = GPIO_MODER(GPIOA_BASE);
+    m2 &= ~(3u << (3 * 2));
+    m2 |=  (2u << (3 * 2));   /* AF mode */
+    GPIO_MODER(GPIOA_BASE) = m2;
+    uint32_t pu2 = GPIO_PUPDR(GPIOA_BASE);
+    pu2 &= ~(3u << (3 * 2));
+    pu2 |=  (1u << (3 * 2));  /* pull-up */
+    GPIO_PUPDR(GPIOA_BASE) = pu2;
+    /* Re-enable USART2 with RXNE interrupt */
+    USART2_CR1 = USART_CR1_RXNEIE | USART_CR1_RE | USART_CR1_TE | USART_CR1_UE;
+
+    return result;
 }
 
 void gps_init(void) {
@@ -130,10 +150,15 @@ void gps_init(void) {
 
     rx_head = 0;
     rx_tail = 0;
+    fe_count = 0;
+    isr_calls = 0;
+    rxne_count = 0;
     line_len = 0;
     last_nmea_len = 0;
     last_nmea[0] = 0;
     memset(&fix, 0, sizeof fix);
+    init_tick = get_tick_ms();
+    baud_switched = 0;
 }
 
 /* "ddmm.mmmm" (lat) or "dddmm.mmmm" (lon) → signed micro-degrees */
@@ -200,9 +225,14 @@ static void parse_gga(char *s) {
 /* ---- USART2 ISR: capture bytes into ring buffer ---- */
 void USART2_IRQHandler(void) {
     uint32_t isr = USART2_ISR;
-    if (isr & USART_ISR_ORE)
-        USART2_ICR = USART_ICR_ORECF;      /* clear overrun */
+    isr_calls++;
+    /* Clear error flags: overrun, framing error, noise error */
+    if (isr & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE)) {
+        USART2_ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NECF;
+        if (isr & USART_ISR_FE) fe_count++;
+    }
     if (isr & USART_ISR_RXNE) {
+        rxne_count++;
         uint8_t byte = (uint8_t)(USART2_RDR & 0xFFu);
         uint8_t next = (rx_head + 1u) & (RX_BUF_SIZE - 1u);
         if (next != rx_tail) {              /* drop if full */
@@ -213,6 +243,23 @@ void USART2_IRQHandler(void) {
 }
 
 void gps_poll(void) {
+    /* Polling fallback: drain all available USART2 bytes directly */
+    for (;;) {
+        uint32_t sr = USART2_ISR;
+        if (sr & (USART_ISR_ORE | USART_ISR_FE | USART_ISR_NE)) {
+            USART2_ICR = USART_ICR_ORECF | USART_ICR_FECF | USART_ICR_NECF;
+            if (sr & USART_ISR_FE) fe_count++;
+        }
+        if (!(sr & USART_ISR_RXNE)) break;
+        uint8_t byte = (uint8_t)(USART2_RDR & 0xFFu);
+        uint8_t next = (rx_head + 1u) & (RX_BUF_SIZE - 1u);
+        if (next != rx_tail) {
+            rx_buf[rx_head] = byte;
+            rx_head = next;
+        }
+        rxne_count++;
+    }
+
     /* Drain ring buffer — non-blocking, returns immediately if empty */
     while (rx_tail != rx_head) {
         char c = (char)rx_buf[rx_tail];
@@ -245,6 +292,22 @@ void gps_poll(void) {
         } else {
             /* overflow — drop line */
             line_len = 0;
+        }
+    }
+
+    /* Auto-baud recovery: if no valid sentences after 3s and FE errors
+     * accumulating, GPS is transmitting at wrong baud — try 4800. */
+    if (!baud_switched && fix.sentences == 0 && fe_count > 10) {
+        uint32_t elapsed = get_tick_ms() - init_tick;
+        if (elapsed >= 3000u) {
+            baud_switched = 1;
+            fe_count = 0;
+            rx_head = 0;
+            rx_tail = 0;
+            line_len = 0;
+            USART2_CR1 = 0;
+            USART2_BRR = 16000000u / 4800u;
+            USART2_CR1 = USART_CR1_RXNEIE | USART_CR1_RE | USART_CR1_TE | USART_CR1_UE;
         }
     }
 }
@@ -290,3 +353,13 @@ uint32_t gps_diag(uint32_t *out_pa3_toggles) {
             (pa2_pu  << 16) | (pa3_pu << 18);
     return isr;
 }
+
+void gps_isr_stats(uint32_t *calls, uint32_t *rxne, uint32_t *fe) {
+    if (calls) *calls = isr_calls;
+    if (rxne)  *rxne  = rxne_count;
+    if (fe)    *fe    = fe_count;
+}
+
+uint32_t gps_get_cr1(void) { return USART2_CR1; }
+uint32_t gps_get_brr(void) { return USART2_BRR; }
+uint32_t gps_get_nvic(void) { return NVIC_ISER; }

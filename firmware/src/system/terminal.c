@@ -275,6 +275,11 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
     } else if (strcmp((const char *)argv[1], "routing") == 0) {
         print_routing_table();
     } else if (strcmp((const char *)argv[1], "gps") == 0) {
+        if (argc >= 3 && strcmp((const char *)argv[2], "reinit") == 0) {
+            gps_init();
+            print("GPS reinitialised\n");
+            return;
+        }
         if (argc >= 3 && strcmp((const char *)argv[2], "raw") == 0) {
             uint8_t on = (argc >= 4) ? (uint8_t)atoi((const char *)argv[3]) : 1;
             gps_set_raw_echo(on);
@@ -338,6 +343,14 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
             snprintf(buf, sizeof(buf), "GPS last NMEA: %s\n", nbuf);
             print(buf);
         }
+        uint32_t ic, rn, fe2;
+        gps_isr_stats(&ic, &rn, &fe2);
+        snprintf(buf, sizeof(buf),
+                 "GPS ISR: calls=%lu rxne=%lu fe=%lu CR1=0x%08lX BRR=%lu NVIC=0x%08lX\n",
+                 (unsigned long)ic, (unsigned long)rn, (unsigned long)fe2,
+                 (unsigned long)gps_get_cr1(), (unsigned long)gps_get_brr(),
+                 (unsigned long)gps_get_nvic());
+        print(buf);
     } else if (strcmp((const char *)argv[1], "battery") == 0) {
         uint16_t raw = adc_read_battery_raw();
         uint32_t mv = ((uint32_t)raw * 6600UL) / 4096UL;

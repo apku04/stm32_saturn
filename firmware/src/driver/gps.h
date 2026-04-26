@@ -51,4 +51,10 @@ void              gps_set_af(uint8_t af);
  * Call gps_set_af(...) afterwards to restore UART operation. */
 uint32_t          gps_probe_pa3(void);
 
+/* ISR statistics for debugging */
+void              gps_isr_stats(uint32_t *calls, uint32_t *rxne, uint32_t *fe);
+uint32_t          gps_get_cr1(void);
+uint32_t          gps_get_brr(void);
+uint32_t          gps_get_nvic(void);
+
 #endif /* GPS_H */

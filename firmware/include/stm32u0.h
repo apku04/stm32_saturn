@@ -275,7 +275,11 @@
 #define USART_CR1_RXNEIE  (1u << 5)
 #define USART_ISR_RXNE    (1u << 5)
 #define USART_ISR_ORE     (1u << 3)
+#define USART_ISR_FE      (1u << 1)
+#define USART_ISR_NE      (1u << 2)
 #define USART_ICR_ORECF   (1u << 3)
+#define USART_ICR_NECF    (1u << 2)
+#define USART_ICR_FECF    (1u << 1)
 
 #define RCC_APBENR1_USART2EN (1u << 17)
 

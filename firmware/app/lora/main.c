@@ -169,7 +169,26 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             data_len = pkt->length - PACKET_HEADER_SIZE;
         uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
         uint8_t app_off = tbl_bytes;
-        if (data_len >= app_off + 9) {
+        if (data_len >= app_off + 18) {
+            /* v5: v4 fields + lat_udeg(4) + lon_udeg(4) + fix_valid(1) */
+            int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
+            uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
+            uint16_t bat   = pkt->data[app_off+4] | ((uint16_t)pkt->data[app_off+5] << 8);
+            uint8_t  chg   = pkt->data[app_off+6];
+            uint8_t  txp   = pkt->data[app_off+7];
+            uint8_t  sf    = pkt->data[app_off+8];
+            int32_t  lat_udeg, lon_udeg;
+            memcpy(&lat_udeg, &pkt->data[app_off+9],  4);
+            memcpy(&lon_udeg, &pkt->data[app_off+13], 4);
+            uint8_t  fix   = pkt->data[app_off+17];
+            snprintf(buf, sizeof(buf),
+                     "[BEACON] i_ma=%d bus=%u bat=%u chg=%u tx_pwr=%u sf=%u"
+                     " lat=%ld lon=%ld fix=%u entries=%u\n",
+                     i_ma, bus, bat, chg, txp, sf,
+                     (long)lat_udeg, (long)lon_udeg, fix,
+                     pkt->mesh_tbl_entries);
+            print(buf);
+        } else if (data_len >= app_off + 9) {
             /* v4: i_ma(2) + bus(2) + bat(2) + chg(1) + tx_pwr(1) + sf(1) */
             int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
             uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
@@ -330,6 +349,9 @@ void HardFault_Handler(void) {
 
 /* ---- Reset handler (entry point) ---- */
 void Reset_Handler(void) {
+    /* Set VTOR to our vector table — critical after DFU bootloader return */
+    SCB_VTOR = 0x08000000u;
+
     /* Copy .data, zero .bss */
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     uint32_t *src = &_sidata, *dst = &_sdata;
