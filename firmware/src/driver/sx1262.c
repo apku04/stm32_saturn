@@ -392,10 +392,15 @@ static void receive_packet(void) {
 
     if (receivedCount > (BUFFER_DATA_SIZE - 3) || receivedCount < 12) return;
 
+    /* SX1262 GET_PKT_STATUS (datasheet 13.5.3):
+     *   [0] RssiPkt        -> rssi  = -RssiPkt/2  dBm
+     *   [1] SnrPkt (s8)    -> snr   =  SnrPkt/4   dB
+     *   [2] SignalRssiPkt  -> prssi = -SignalRssiPkt/2 dBm */
     uint8_t pkt_status[3] = {0};
     read_command(SX1262_CMD_GET_PKT_STATUS, NULL, 0, pkt_status, 3);
-    int16_t rssi = -((int16_t)pkt_status[0]) / 2;
-    int16_t prssi = rssi;
+    int16_t rssi  = -((int16_t)pkt_status[0]) / 2;
+    int8_t  snr   =  ((int8_t)pkt_status[1])  / 4;
+    int16_t prssi = -((int16_t)pkt_status[2]) / 2;
 
     memset(payload, 0, BUFFER_DATA_SIZE);
     read_buffer(rx_start, &payload[3], receivedCount);
@@ -408,6 +413,7 @@ static void receive_packet(void) {
     pkt.pOwner = MAC;
     pkt.rssi = rssi;
     pkt.prssi = prssi;
+    pkt.snr = snr;
     pkt.rxCnt = payload[2];
     pkt.destination_adr = payload[3];
     pkt.source_adr = payload[4];

@@ -101,6 +101,7 @@ typedef struct __attribute__((__packed__)) {
     uint8_t  pOwner;
     int16_t  rssi;
     int16_t  prssi;
+    int8_t   snr;       /* dB, decoded from SX1262 SnrPkt/4 (signed) */
     uint8_t  rxCnt;
     uint8_t  destination_adr;   /* 0 */
     uint8_t  source_adr;        /* 1 */
