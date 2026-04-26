@@ -123,6 +123,9 @@ static void help_command(void) {
           "  get <param>\n"
           "  set <param> <value>\n"
           "  send <message>\n"
+          "  send cfg pwr <N>          remote: set tx_power (1..22)\n"
+          "  send cfg sf  <N>          remote: set SF (5..12)\n"
+          "  send cfg both <pwr> <sf>  remote: set both\n"
           "  ping\n"
           "  version\n"
           "  reset\n"
@@ -384,6 +387,58 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
 }
 
 static void send_commands(uint16_t argc, uint8_t *argv[]) {
+    /* Range-test remote-config command:
+     *   send cfg pwr <N>           -> tx_power = N (1..22)
+     *   send cfg sf  <N>           -> data_rate (SF) = N (5..12)
+     *   send cfg both <pwr> <sf>   -> both
+     * Broadcast (TTL=0) like PING. Field device replies with CMD_ACK before
+     * applying. After SF change you MUST manually `set data_rate <N>` on
+     * the base or you'll stop hearing the remote. */
+    if (argc >= 3 && strcmp((const char *)argv[1], "cfg") == 0) {
+        Packet pkt;
+        memset(&pkt, 0, sizeof(Packet));
+        pkt.pOwner = NET;
+        pkt.pktDir = OUTGOING;
+        pkt.control_app = CMD_CFG;
+
+        const char *sub = (const char *)argv[2];
+        if (argc >= 4 && strcmp(sub, "pwr") == 0) {
+            uint8_t v = (uint8_t)strtol((const char *)argv[3], NULL, 10);
+            if (v < 1 || v > 22) { print("Error: pwr must be 1..22\n"); return; }
+            pkt.data[0] = 0x01;
+            pkt.data[1] = v;
+            pkt.length = 4 + 2;
+        } else if (argc >= 4 && strcmp(sub, "sf") == 0) {
+            uint8_t v = (uint8_t)strtol((const char *)argv[3], NULL, 10);
+            if (v < 5 || v > 12) { print("Error: sf must be 5..12\n"); return; }
+            pkt.data[0] = 0x02;
+            pkt.data[1] = v;
+            pkt.length = 4 + 2;
+        } else if (argc >= 5 && strcmp(sub, "both") == 0) {
+            uint8_t p = (uint8_t)strtol((const char *)argv[3], NULL, 10);
+            uint8_t s = (uint8_t)strtol((const char *)argv[4], NULL, 10);
+            if (p < 1 || p > 22 || s < 5 || s > 12) {
+                print("Error: usage: send cfg both <pwr 1..22> <sf 5..12>\n");
+                return;
+            }
+            pkt.data[0] = 0x03;
+            pkt.data[1] = p;
+            pkt.data[2] = s;
+            pkt.length = 4 + 3;
+        } else {
+            print("Usage: send cfg pwr <N> | send cfg sf <N> | send cfg both <pwr> <sf>\n");
+            return;
+        }
+
+        if (buffer_full(Ulme.pktTxBuf) != GLOB_ERROR_BUFFER_FULL) {
+            write_packet(Ulme.pktTxBuf, &pkt);
+            print("[CFG] sent, awaiting CMD_ACK...\n");
+        } else {
+            print("Buffer full\n");
+        }
+        return;
+    }
+
     Packet pkt;
     memset(&pkt, 0, sizeof(Packet));
     pkt.pOwner = APP;
