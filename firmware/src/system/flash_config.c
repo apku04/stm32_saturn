@@ -69,3 +69,27 @@ void readFlash(addrEnum addr, uint8_t *read_data) {
     else
         *read_data = (uint8_t)(val & 0xFF);
 }
+
+/*
+ * Write a single byte to an erased (0xFF) flash slot without page erase.
+ * Safe only when the target double-word has never been programmed since
+ * the last page erase — i.e. the slot reads back as 0xFF.
+ */
+void writeFlashByte(addrEnum addr, uint8_t value) {
+    volatile uint32_t *dst = (volatile uint32_t *)(CONFIG_PAGE_ADDR + (uint32_t)addr * 8);
+    /* Only program if the slot is still erased */
+    if (dst[0] != 0xFFFFFFFF)
+        return;
+
+    flash_unlock();
+    flash_wait();
+    FLASH_CR |= FLASH_CR_PG;
+
+    dst[0] = value;
+    dst[1] = 0xFFFFFFFF;
+    flash_wait();
+    FLASH_SR = FLASH_SR_EOP;
+
+    FLASH_CR &= ~FLASH_CR_PG;
+    flash_lock();
+}

@@ -522,16 +522,26 @@ void radio_set_datarate(uint8_t data_rate) {
     if (data_rate > 12) data_rate = 12;
     current_sf = data_rate;
     uint8_t ldro = (current_sf >= 11) ? 1 : 0;
+    /* SX1262 requires STDBY before SetModulationParams. Calling it while
+     * RX continuous is active leaves the radio in an undefined state
+     * (RX stuck on old SF, occasional hang -> "super slow"). Mirror the
+     * radio_set_channel sequence: standby -> set params -> restart RX. */
+    set_standby(SX1262_STANDBY_XOSC);
     set_modulation_params(current_sf, SX1262_LORA_BW_125, SX1262_LORA_CR_4_5, ldro);
+    radio_start_rx();
 }
-
-uint8_t radio_get_datarate(void) { return current_sf; }
 
 void radio_set_tx_power(uint8_t power) {
     if (power > 22) power = 22;
     current_tx_power = power;
+    /* set_tx_params is allowed in RX mode per datasheet, but going via
+     * standby + restart_rx is safer and matches set_datarate. */
+    set_standby(SX1262_STANDBY_XOSC);
     set_tx_params((int8_t)power, SX1262_RAMP_200_US);
+    radio_start_rx();
 }
+
+uint8_t radio_get_datarate(void) { return current_sf; }
 
 uint8_t radio_get_tx_power(void) { return current_tx_power; }
 

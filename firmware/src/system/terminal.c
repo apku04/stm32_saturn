@@ -254,6 +254,13 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
     } else if (strcmp((const char *)argv[1], "mac_address") == 0) {
         snprintf(buf, sizeof(buf), "MAC Address: %u\n", get_mac_address());
         print(buf);
+    } else if (strcmp((const char *)argv[1], "uid") == 0) {
+        const volatile uint8_t *p = (const volatile uint8_t *)UID_BASE;
+        snprintf(buf, sizeof(buf),
+                 "UID: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X\n",
+                 p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7], p[8],p[9],p[10],p[11]);
+        print(buf);
+
     } else if (strcmp((const char *)argv[1], "flash") == 0) {
         deviceData_t fData;
         uint8_t *p = (uint8_t *)&fData;

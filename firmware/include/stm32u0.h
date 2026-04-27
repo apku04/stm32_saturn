@@ -284,6 +284,8 @@
 #define RCC_APBENR1_USART2EN (1u << 17)
 
 /* ---- Unique device ID (96-bit, factory-programmed) ---- */
+/* STM32U073 UID base — verified by reading at runtime; matches the
+ * common STM32U0 placement at 0x1FFF6E50 (NOT 0x1FFF7590, which reads 0). */
 #define UID_BASE  0x1FFF6E50UL
 
 #endif /* STM32U0_H */

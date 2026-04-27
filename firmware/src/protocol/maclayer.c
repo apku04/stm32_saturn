@@ -72,26 +72,70 @@ uint8_t get_mac_address(void) {
     return Mlme.mAddr;
 }
 
+/*
+ * Compute a 1-byte fingerprint from the STM32 96-bit factory UID.
+ * Uses FNV-1a over all 12 bytes folded down — much better entropy
+ * than a flat XOR fold, which collides on sibling dies (same lot/wafer).
+ */
+static uint8_t uid_fingerprint(void) {
+    const volatile uint8_t *p = (const volatile uint8_t *)UID_BASE;
+    uint32_t h = 0x811C9DC5u;  /* FNV-1a 32-bit offset basis */
+    for (uint8_t i = 0; i < 12; i++) {
+        h ^= (uint32_t)p[i];
+        h *= 0x01000193u;      /* FNV-1a 32-bit prime */
+    }
+    /* Fold 32 -> 8 with XOR */
+    uint8_t fp = (uint8_t)(h ^ (h >> 8) ^ (h >> 16) ^ (h >> 24));
+    return (fp == 0xFF) ? 0xFE : fp;   /* never collide with erased */
+}
+
+/* Derive a valid MAC address (1..253) from the UID using FNV-1a. */
+static uint8_t uid_derive_address(void) {
+    const volatile uint8_t *p = (const volatile uint8_t *)UID_BASE;
+    /* Different seed than uid_fingerprint() so address != fingerprint
+     * (otherwise a clone-detect that re-derives address could land back
+     * on the same value as the stored fingerprint). */
+    uint32_t h = 0xDEADBEEFu;
+    for (uint8_t i = 0; i < 12; i++) {
+        h ^= (uint32_t)p[i];
+        h *= 0x01000193u;
+    }
+    uint8_t derived = (uint8_t)(h ^ (h >> 8) ^ (h >> 16) ^ (h >> 24));
+    if (derived == 0)   derived = 1;
+    if (derived >= 254) derived = 253;
+    return derived;
+}
+
 void mac_layer_init(PacketBuffer *pRxBuf, PacketBuffer *pTxBuf) {
     Mlme.pktRxBuf = pRxBuf;
     Mlme.pktTxBuf = pTxBuf;
     Mlme.headerSize = MAC_HEADER_SIZE;
 
     uint8_t stored_addr = 0;
+    uint8_t stored_fp   = 0xFF;
     readFlash(DEVICE_ID, &stored_addr);
+    readFlash(UID_FINGERPRINT, &stored_fp);
+
+    uint8_t cur_fp = uid_fingerprint();
+
     if (stored_addr >= 1 && stored_addr <= 254) {
-        Mlme.mAddr = stored_addr;
+        if (stored_fp == 0xFF) {
+            /* First boot with new firmware on an existing board.
+             * Preserve the intentionally-set address; stamp our UID
+             * fingerprint so future clones can be detected. */
+            writeFlashByte(UID_FINGERPRINT, cur_fp);
+            Mlme.mAddr = stored_addr;
+        } else if (stored_fp == cur_fp) {
+            /* Same board that wrote this config — use stored address. */
+            Mlme.mAddr = stored_addr;
+        } else {
+            /* UID fingerprint mismatch → cloned flash image.
+             * Derive a unique address from this board's UID. */
+            Mlme.mAddr = uid_derive_address();
+        }
     } else {
-        /* Derive a unique address from the 96-bit factory UID */
-        uint32_t uid = (*(volatile uint32_t *)(UID_BASE))
-                     ^ (*(volatile uint32_t *)(UID_BASE + 4))
-                     ^ (*(volatile uint32_t *)(UID_BASE + 8));
-        uint8_t derived = (uint8_t)((uid ^ (uid >> 8) ^ (uid >> 16) ^ (uid >> 24)) & 0xFF);
-        if (derived == 0 || derived >= 254)
-            derived = (derived ^ 0x55) & 0xFE;
-        if (derived == 0)
-            derived = 1;
-        Mlme.mAddr = derived;
+        /* No valid address in flash — derive from UID (first boot). */
+        Mlme.mAddr = uid_derive_address();
     }
 
     srand(4125);

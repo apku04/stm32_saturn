@@ -32,7 +32,8 @@ typedef enum {
     FLASH_SIZE_PARAM,
     OTA_PENDING_FLAG,
     OTA_IMAGE_SIZE_LO,
-    OTA_IMAGE_SIZE_HI
+    OTA_IMAGE_SIZE_HI,
+    UID_FINGERPRINT
 } addrEnum;
 
 /* ---- Packet direction / ownership ---- */
