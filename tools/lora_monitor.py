@@ -8,8 +8,9 @@ Requirements: pip install pyserial
 Optional map tab: pip install tkintermapview  (Windows: py -m pip install tkintermapview)
 """
 
+import csv
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
+from tkinter import ttk, scrolledtext, messagebox, filedialog
 import threading
 import re
 import time
@@ -62,6 +63,11 @@ RX_PATTERN = re.compile(
 RX_PATTERN_LEGACY = re.compile(
     r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+type=(\d+)\s+len=(\d+)"
 )
+BEACON_PATTERN_V6 = re.compile(
+    r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+"
+    r"tx_pwr=(\d+)\s+sf=(\d+)\s+lat=(-?\d+)\s+lon=(-?\d+)\s+fix=(\d+)\s+"
+    r"temp_cdeg=(-?\d+)\s+hum_cpct=(\d+)\s+entries=(\d+)"
+)
 BEACON_PATTERN_V5 = re.compile(
     r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+"
     r"tx_pwr=(\d+)\s+sf=(\d+)\s+lat=(-?\d+)\s+lon=(-?\d+)\s+fix=(\d+)\s+entries=(\d+)"
@@ -108,9 +114,14 @@ class LoRaMonitor:
         self.running = False
         self.packet_count = 0
         self.beacon_count = 0
+        self.byte_count = 0
+        self.connect_time = None
         self.last_rx = {}  # src -> last RX info for beacon panel
         self.gps_nodes = {}  # src -> latest GPS fix dict
         self.last_fix_time = {}  # src -> timestamp string of last valid fix
+        self.nodes = {}            # src -> dict of latest snapshot for Nodes tab
+        self.node_rows = {}        # src -> treeview iid in nodes_tree
+        self.beacon_history = []   # list of dicts for CSV export
         self.map_widget = None
         self.map_markers = {}
         self.latest_map_url = None
@@ -120,11 +131,12 @@ class LoRaMonitor:
         self._setup_styles()
         self._build_ui()
         self._refresh_ports()
+        self._tick_uptime()
 
     # ------------------------------------------------------------------ UI
     def _setup_styles(self):
-        self.root.geometry("1180x760")
-        self.root.minsize(980, 620)
+        self.root.geometry("1240x780")
+        self.root.minsize(1000, 640)
 
         self.colors = {
             "bg": "#f5f7fb",
@@ -138,6 +150,10 @@ class LoRaMonitor:
             "warn": "#b54708",
             "row_alt": "#f8fafc",
             "row_selected": "#dbeafe",
+            "rssi_strong": "#047857",
+            "rssi_ok":     "#b54708",
+            "rssi_weak":   "#b42318",
+            "chip":        "#eef2ff",
         }
         self.root.configure(bg=self.colors["bg"])
 
@@ -171,6 +187,8 @@ class LoRaMonitor:
         style.map("Treeview", background=[("selected", self.colors["row_selected"])], foreground=[("selected", self.colors["text"])])
         style.configure("TLabelframe", background=self.colors["bg"], bordercolor=self.colors["line"], padding=8)
         style.configure("TLabelframe.Label", background=self.colors["bg"], foreground=self.colors["muted"], font=("Segoe UI", 9, "bold"))
+        style.configure("Status.TLabel", background="#111827", foreground="#e5e7eb", padding=(8, 4))
+        style.configure("Chip.TLabel", background=self.colors["chip"], foreground=self.colors["accent"], padding=(8, 2), font=("Segoe UI", 9, "bold"))
 
     def _build_ui(self):
         main = ttk.Frame(self.root, padding=(12, 10, 12, 10))
@@ -208,6 +226,37 @@ class LoRaMonitor:
         nb = ttk.Notebook(main)
         nb.pack(fill=tk.BOTH, expand=True)
 
+        # --- Tab 0: Nodes (live overview, one row per board) ---
+        nodes_frame = ttk.Frame(nb, padding=8)
+        nb.add(nodes_frame, text="Nodes")
+
+        nodes_hint = ttk.Frame(nodes_frame)
+        nodes_hint.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(nodes_hint, text="Live snapshot per node \u2014 updates on every beacon",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        self.node_count_chip = ttk.Label(nodes_hint, text="0 nodes", style="Chip.TLabel")
+        self.node_count_chip.pack(side=tk.RIGHT)
+
+        node_cols = ("src", "last_seen", "age", "link", "rssi", "snr",
+                     "sf", "tx_pwr", "bus_v", "i_ma", "chg",
+                     "temp", "rh", "gps")
+        self.nodes_tree = ttk.Treeview(nodes_frame, columns=node_cols, show="headings",
+                                       height=10)
+        widths = (50, 80, 60, 90, 60, 50, 40, 60, 70, 70, 80, 70, 70, 220)
+        for c, w in zip(node_cols, widths):
+            self.nodes_tree.heading(c, text=c.upper().replace("_", " "))
+            self.nodes_tree.column(c, width=w, minwidth=30,
+                                   stretch=(c == "gps"))
+        self.nodes_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+        sb_n = ttk.Scrollbar(nodes_frame, orient=tk.VERTICAL,
+                             command=self.nodes_tree.yview)
+        sb_n.pack(fill=tk.Y, side=tk.RIGHT)
+        self.nodes_tree.configure(yscrollcommand=sb_n.set)
+        self.nodes_tree.tag_configure("good",  foreground=self.colors["rssi_strong"])
+        self.nodes_tree.tag_configure("ok",    foreground=self.colors["rssi_ok"])
+        self.nodes_tree.tag_configure("weak",  foreground=self.colors["rssi_weak"])
+        self.nodes_tree.tag_configure("stale", foreground=self.colors["muted"])
+
         # --- Tab 1: Packet Table ---
         pkt_frame = ttk.Frame(nb, padding=8)
         nb.add(pkt_frame, text="Packets")
@@ -238,6 +287,8 @@ class LoRaMonitor:
         self.pkt_tree.tag_configure("ACK", foreground=self.colors["accent"])
         self.pkt_tree.tag_configure("CMD_CFG", foreground=self.colors["warn"])
         self.pkt_tree.tag_configure("CMD_ACK", foreground=self.colors["warn"])
+        self.pkt_tree.tag_configure("rssi_good", background="#ecfdf5")
+        self.pkt_tree.tag_configure("rssi_weak", background="#fef2f2")
         sb = ttk.Scrollbar(pkt_top, orient=tk.VERTICAL, command=self.pkt_tree.yview)
         sb.pack(fill=tk.Y, side=tk.RIGHT)
         hsb = ttk.Scrollbar(pkt_frame, orient=tk.HORIZONTAL, command=self.pkt_tree.xview)
@@ -257,9 +308,19 @@ class LoRaMonitor:
         bcn_frame = ttk.Frame(nb, padding=8)
         nb.add(bcn_frame, text="Beacons")
 
-        bcn_cols = ("time", "src", "rssi", "prssi", "snr", "tx_pwr", "sf", "bus_v", "i_ma", "p_mw", "charge", "entries")
+        bcn_summary = ttk.Frame(bcn_frame)
+        bcn_summary.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(bcn_summary, text="Per-beacon detail (latest first)",
+                  style="Muted.TLabel").pack(side=tk.LEFT)
+        ttk.Button(bcn_summary, text="Export CSV\u2026",
+                   command=self._export_beacons_csv).pack(side=tk.RIGHT)
+
+        bcn_cols = ("time", "src", "rssi", "prssi", "snr", "tx_pwr", "sf",
+                    "bus_v", "i_ma", "p_mw", "charge",
+                    "temp", "rh", "entries")
         self.bcn_tree = ttk.Treeview(bcn_frame, columns=bcn_cols, show="headings", height=14)
-        for c, w in zip(bcn_cols, (70, 50, 50, 50, 40, 50, 30, 70, 70, 70, 70, 50)):
+        widths = (70, 50, 50, 50, 40, 50, 30, 70, 70, 70, 70, 70, 60, 50)
+        for c, w in zip(bcn_cols, widths):
             self.bcn_tree.heading(c, text=c.upper().replace("_", " "))
             self.bcn_tree.column(c, width=w, minwidth=30)
         self.bcn_tree.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
@@ -407,8 +468,18 @@ class LoRaMonitor:
         quick.pack(side=tk.LEFT, padx=(10, 0))
         for label, cmd in [("Get Battery", "get battery"), ("Get Solar", "get solar"),
                            ("Get Charge", "get charge"), ("Get Routing", "get routing"),
+                           ("Get SHT", "get sht"), ("Get BME", "get bme"),
                            ("Ping", "ping")]:
             ttk.Button(quick, text=label, command=lambda c=cmd: self._send_raw(c)).pack(side=tk.LEFT, padx=2)
+
+        # Status bar (bottom)
+        self.statusbar = ttk.Label(
+            self.root,
+            text="Ready  \u00b7  not connected",
+            style="Status.TLabel",
+            anchor=tk.W,
+        )
+        self.statusbar.pack(fill=tk.X, side=tk.BOTTOM)
 
     # --------------------------------------------------------- Port logic
     def _refresh_ports(self):
@@ -482,6 +553,8 @@ class LoRaMonitor:
             messagebox.showerror("Connect failed", f"Could not open {port}:\n{e}")
             return
         self.running = True
+        self.connect_time = time.time()
+        self.byte_count = 0
         self.connect_btn.config(text="Disconnect")
         self.status_lbl.config(text=f"Connected: {port}", style="Good.TLabel")
         self.port_combo.config(state="disabled")
@@ -494,6 +567,7 @@ class LoRaMonitor:
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
         self.serial_port = None
+        self.connect_time = None
         self.connect_btn.config(text="Connect")
         self.status_lbl.config(text="Disconnected", style="Bad.TLabel")
         self.port_combo.config(state="readonly")
@@ -515,6 +589,7 @@ class LoRaMonitor:
                         self.root.after(0, self._add_rx_packet, pending_rx, None)
                         pending_rx = None
                     continue
+                self.byte_count += len(raw)
                 text = raw.decode("ascii", errors="replace")
                 buf += text
 
@@ -535,16 +610,17 @@ class LoRaMonitor:
                         continue
 
                     # Check for [BEACON] line (follows a [RX] with type=0)
-                    bcn_v5 = BEACON_PATTERN_V5.match(line)
-                    bcn_v4 = BEACON_PATTERN_V4.match(line) if not bcn_v5 else None
-                    bcn_v3 = BEACON_PATTERN_V3.match(line) if not (bcn_v5 or bcn_v4) else None
-                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3) else None
-                    bcn = BEACON_PATTERN.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2) else None
-                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn) else None
-                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not (bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg) else None
-                    if bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
-                        match = bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min
-                        version = "v5" if bcn_v5 else ("v4" if bcn_v4 else ("v3" if bcn_v3 else None))
+                    bcn_v6 = BEACON_PATTERN_V6.match(line)
+                    bcn_v5 = BEACON_PATTERN_V5.match(line) if not bcn_v6 else None
+                    bcn_v4 = BEACON_PATTERN_V4.match(line) if not (bcn_v6 or bcn_v5) else None
+                    bcn_v3 = BEACON_PATTERN_V3.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4) else None
+                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3) else None
+                    bcn = BEACON_PATTERN.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2) else None
+                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn) else None
+                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg) else None
+                    if bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
+                        match = bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min
+                        version = "v6" if bcn_v6 else ("v5" if bcn_v5 else ("v4" if bcn_v4 else ("v3" if bcn_v3 else None)))
                         beacon_data = self._parse_beacon(match, version=version)
                         if pending_rx:
                             self.root.after(0, self._add_rx_packet, pending_rx, beacon_data)
@@ -598,6 +674,14 @@ class LoRaMonitor:
 
     def _parse_beacon(self, m, version=None):
         groups = m.groups()
+        if version == "v6" and len(groups) == 12:
+            # v6: v5 + temp_cdeg + hum_cpct
+            return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],
+                    "chg": groups[3], "tx_pwr": groups[4], "sf": groups[5],
+                    "lat_udeg": int(groups[6]), "lon_udeg": int(groups[7]),
+                    "fix": int(groups[8]),
+                    "temp_cdeg": int(groups[9]), "hum_cpct": int(groups[10]),
+                    "entries": groups[11]}
         if version == "v5" and len(groups) == 10:
             # v5: i_ma, bus, bat, chg, tx_pwr, sf, lat_udeg, lon_udeg, fix, entries
             return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],
@@ -664,14 +748,23 @@ class LoRaMonitor:
                 else:
                     gps_suffix = "  📍 no fix"
                 self._update_gps_tab(ts, rx["src"], beacon)
-            info = f"Bus={bus_v}  I={i_ma}  P={p_mw}  Charge={chg_s}  Routes={beacon['entries']}{extra}{gps_suffix}"
+            env_suffix = ""
+            if "temp_cdeg" in beacon:
+                env_suffix = f"  T={beacon['temp_cdeg']/100:.2f}°C  RH={beacon['hum_cpct']/100:.2f}%"
+            info = f"Bus={bus_v}  I={i_ma}  P={p_mw}  Charge={chg_s}  Routes={beacon['entries']}{extra}{gps_suffix}{env_suffix}"
 
             # Add to beacon tree
             beacon_tags = ("odd",) if self.beacon_count % 2 else ()
+            temp_str = (f"{beacon['temp_cdeg']/100:.2f}\u00b0C"
+                        if "temp_cdeg" in beacon else "\u2014")
+            rh_str   = (f"{beacon['hum_cpct']/100:.1f}%"
+                        if "hum_cpct" in beacon else "\u2014")
             self.bcn_tree.insert("", 0, tags=beacon_tags, values=(
                 ts, rx["src"], rx["rssi"], rx["prssi"], rx.get("snr", "—"),
                 beacon.get("tx_pwr", "—"), beacon.get("sf", "—"),
-                bus_v, i_ma, p_mw, chg_s, beacon["entries"]
+                bus_v, i_ma, p_mw, chg_s,
+                temp_str, rh_str,
+                beacon["entries"]
             ))
             # Trim beacon tree
             children = self.bcn_tree.get_children()
@@ -679,9 +772,33 @@ class LoRaMonitor:
                 for c in children[200:]:
                     self.bcn_tree.delete(c)
 
+            # Append to history (CSV export) and update Nodes tab
+            self.beacon_history.append({
+                "time": ts, "src": rx["src"],
+                "rssi": rx["rssi"], "prssi": rx["prssi"],
+                "snr": rx.get("snr", ""), "sf": beacon.get("sf", ""),
+                "tx_pwr": beacon.get("tx_pwr", ""),
+                "bus_mv": beacon.get("bus", ""), "i_ma": beacon.get("i_ma", ""),
+                "chg": chg_s, "entries": beacon["entries"],
+                "temp_cdeg": beacon.get("temp_cdeg", ""),
+                "hum_cpct":  beacon.get("hum_cpct", ""),
+                "lat_udeg": beacon.get("lat_udeg", ""),
+                "lon_udeg": beacon.get("lon_udeg", ""),
+                "fix": beacon.get("fix", ""),
+            })
+            if len(self.beacon_history) > 5000:
+                self.beacon_history = self.beacon_history[-5000:]
+            self._update_node_row(rx, beacon, ts, bus_v, i_ma, chg_s,
+                                  temp_str, rh_str)
+
         packet_tags = [ptype]
         if self.packet_count % 2:
             packet_tags.append("odd")
+        rssi_t = self._rssi_tag(rx["rssi"])
+        if rssi_t == "good":
+            packet_tags.append("rssi_good")
+        elif rssi_t == "weak":
+            packet_tags.append("rssi_weak")
         self.pkt_tree.insert("", 0, tags=tuple(packet_tags), values=(
             ts, rx["src"], rx["dst"], ptype, rx["seq"],
             rx["rssi"], rx["prssi"], rx.get("snr", "—"), rx.get("sf", "—"),
@@ -880,13 +997,18 @@ class LoRaMonitor:
 
     # --------------------------------------------------------------- Log
     def _clear_packets(self):
-        for tree in (self.pkt_tree, self.bcn_tree, self.gps_tree):
+        for tree in (self.pkt_tree, self.bcn_tree, self.gps_tree,
+                     self.nodes_tree):
             for item in tree.get_children():
                 tree.delete(item)
         self.packet_count = 0
         self.beacon_count = 0
         self.last_fix_time.clear()
         self.gps_nodes.clear()
+        self.nodes.clear()
+        self.node_rows.clear()
+        self.beacon_history.clear()
+        self.node_count_chip.config(text="0 nodes")
         self.latest_map_url = None
         for marker in self.map_markers.values():
             marker.delete()
@@ -960,6 +1082,122 @@ class LoRaMonitor:
         line_count = int(self.log_text.index("end-1c").split(".")[0])
         if line_count > 2000:
             self.log_text.delete("1.0", f"{line_count - 2000}.0")
+
+    # ------------------------------------------------- Live status / nodes
+    def _rssi_tag(self, rssi_str):
+        try:
+            r = int(rssi_str)
+        except (TypeError, ValueError):
+            return "stale"
+        if r >= -90:  return "good"
+        if r >= -110: return "ok"
+        return "weak"
+
+    def _link_bar(self, rssi_str):
+        """5-segment unicode bar mapped to RSSI range -120…-60 dBm."""
+        try:
+            r = int(rssi_str)
+        except (TypeError, ValueError):
+            return "—"
+        bars = max(0, min(5, int((r + 120) / 12)))
+        return "█" * bars + "░" * (5 - bars)
+
+    def _update_node_row(self, rx, beacon, ts, bus_v, i_ma, chg_s,
+                         temp_str, rh_str):
+        src = str(rx["src"])
+        gps_str = "—"
+        if "lat_udeg" in beacon:
+            lat = beacon["lat_udeg"] / 1_000_000
+            lon = beacon["lon_udeg"] / 1_000_000
+            if beacon["fix"]:
+                gps_str = f"\u2713 {lat:.5f}, {lon:.5f}"
+            elif lat or lon:
+                gps_str = f"— stale {lat:.5f}, {lon:.5f}"
+            else:
+                gps_str = "no fix"
+
+        snap = {
+            "src": src,
+            "last_seen": ts,
+            "last_seen_epoch": time.time(),
+            "rssi":   rx["rssi"],
+            "snr":    rx.get("snr", "—"),
+            "sf":     beacon.get("sf", "—"),
+            "tx_pwr": beacon.get("tx_pwr", "—"),
+            "bus_v":  bus_v,
+            "i_ma":   i_ma,
+            "chg":    chg_s,
+            "temp":   temp_str,
+            "rh":     rh_str,
+            "gps":    gps_str,
+        }
+        self.nodes[src] = snap
+        self._refresh_node_row(src)
+        self.node_count_chip.config(text=f"{len(self.nodes)} node"
+                                         + ("s" if len(self.nodes) != 1 else ""))
+
+    def _refresh_node_row(self, src):
+        snap = self.nodes.get(src)
+        if not snap:
+            return
+        age = max(0, int(time.time() - snap["last_seen_epoch"]))
+        if age < 60:
+            age_str = f"{age}s ago"
+        elif age < 3600:
+            age_str = f"{age // 60}m{age % 60:02d}s"
+        else:
+            age_str = f"{age // 3600}h{(age % 3600) // 60:02d}m"
+        tag = self._rssi_tag(snap["rssi"]) if age < 120 else "stale"
+        link = self._link_bar(snap["rssi"])
+        values = (snap["src"], snap["last_seen"], age_str, link,
+                  snap["rssi"], snap["snr"], snap["sf"], snap["tx_pwr"],
+                  snap["bus_v"], snap["i_ma"], snap["chg"],
+                  snap["temp"], snap["rh"], snap["gps"])
+        iid = self.node_rows.get(src)
+        if iid and self.nodes_tree.exists(iid):
+            self.nodes_tree.item(iid, values=values, tags=(tag,))
+        else:
+            self.node_rows[src] = self.nodes_tree.insert(
+                "", tk.END, values=values, tags=(tag,))
+
+    def _tick_uptime(self):
+        # Refresh status bar + node ages every second.
+        if self.connect_time is not None:
+            up = int(time.time() - self.connect_time)
+            up_str = f"{up // 3600:d}h{(up % 3600) // 60:02d}m{up % 60:02d}s"
+            kib = self.byte_count / 1024.0
+            self.statusbar.config(
+                text=(f"Connected  \u00b7  uptime {up_str}  \u00b7  "
+                      f"{self.byte_count} bytes ({kib:.1f} KiB)  \u00b7  "
+                      f"{self.packet_count} pkts \u00b7 {self.beacon_count} beacons \u00b7 "
+                      f"{len(self.nodes)} nodes"))
+        else:
+            self.statusbar.config(text="Ready  \u00b7  not connected")
+        for src in list(self.nodes):
+            self._refresh_node_row(src)
+        self.root.after(1000, self._tick_uptime)
+
+    def _export_beacons_csv(self):
+        if not self.beacon_history:
+            messagebox.showinfo("No data", "No beacons captured yet.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile=f"beacons_{datetime.now():%Y%m%d_%H%M%S}.csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=list(self.beacon_history[0].keys()))
+                w.writeheader()
+                w.writerows(self.beacon_history)
+        except OSError as e:
+            messagebox.showerror("Export failed", str(e))
+            return
+        self.statusbar.config(
+            text=f"Exported {len(self.beacon_history)} beacons to {path}")
 
 
 def main():

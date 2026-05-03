@@ -19,6 +19,9 @@
 #include "adc.h"
 #include "ina219.h"
 #include "i2c.h"
+#include "bb_i2c.h"
+#include "bme280.h"
+#include "sht3x.h"
 #include "flash_ota.h"
 #include "gps.h"
 
@@ -415,6 +418,59 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
             }
         }
         print("Done\n");
+    } else if (strcmp((const char *)argv[1], "bbscan") == 0) {
+        print("Scanning bit-bang I2C (PB6/PB7)...\n");
+        for (uint8_t a = 0x08; a <= 0x77; a++) {
+            uint8_t dummy;
+            if (bb_i2c_read(a, &dummy, 1) == 0) {
+                snprintf(buf, sizeof(buf), "  Found: 0x%02X\n", a);
+                print(buf);
+            }
+        }
+        print("Done\n");
+    } else if (strcmp((const char *)argv[1], "bme") == 0) {
+        /* Diagnostic: dump BME280 chip id, raw H bytes, calibration H regs,
+         * and the compensated values from a fresh sample. */
+        uint8_t id = 0xFF;
+        for (uint8_t a = 0x76; a <= 0x77; a++) {
+            if (bb_i2c_write_then_read(a, 0xD0, &id, 1) == 0) {
+                snprintf(buf, sizeof(buf),
+                         "BME @0x%02X chip_id=0x%02X (%s)\n",
+                         a, id,
+                         id == 0x60 ? "BME280" :
+                         id == 0x58 ? "BMP280 (NO HUMIDITY)" :
+                         id == 0x61 ? "BME680" : "unknown");
+                print(buf);
+            }
+        }
+        uint8_t h1 = 0, h27[7] = {0}, raw[8] = {0};
+        bb_i2c_write_then_read(0x76, 0xA1, &h1, 1);
+        bb_i2c_write_then_read(0x76, 0xE1, h27, 7);
+        snprintf(buf, sizeof(buf),
+                 "calib: H1=%u  E1..E7=%02X %02X %02X %02X %02X %02X %02X\n",
+                 h1, h27[0], h27[1], h27[2], h27[3], h27[4], h27[5], h27[6]);
+        print(buf);
+        bme280_sample();
+        bb_i2c_write_then_read(0x76, 0xF7, raw, 8);
+        snprintf(buf, sizeof(buf),
+                 "raw F7..FE: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                 raw[0], raw[1], raw[2], raw[3],
+                 raw[4], raw[5], raw[6], raw[7]);
+        print(buf);
+        snprintf(buf, sizeof(buf), "T=%d cdeg  H=%u cpct  present=%d\n",
+                 bme280_get_temp_cdeg(), bme280_get_hum_cpct(),
+                 bme280_present());
+        print(buf);
+    } else if (strcmp((const char *)argv[1], "sht") == 0) {
+        snprintf(buf, sizeof(buf), "SHT3x present=%d\n", sht3x_present());
+        print(buf);
+        if (sht3x_present()) {
+            int r = sht3x_sample();
+            snprintf(buf, sizeof(buf),
+                     "sample ret=%d  T=%d cdeg  H=%u cpct\n",
+                     r, sht3x_get_temp_cdeg(), sht3x_get_hum_cpct());
+            print(buf);
+        }
     } else if (strcmp((const char *)argv[1], "adcscan") == 0) {
         print("ADC scan ch0-19:\n");
         for (uint8_t ch = 0; ch <= 19; ch++) {

@@ -23,6 +23,8 @@
 #include "adc.h"
 #include "ina219.h"
 #include "gps.h"
+#include "bme280.h"
+#include "sht3x.h"
 
 /* ---- Globals ---- */
 static uint16_t seq = 0;
@@ -120,7 +122,25 @@ static void beaconHandler(void) {
             memcpy(&pkt.data[9],  &lat_udeg, 4);
             memcpy(&pkt.data[13], &lon_udeg, 4);
             pkt.data[17] = gfix->valid ? 1u : 0u;
-            pkt.length = 4 + 18;  /* header + 18 bytes telemetry (v5) */
+
+            /* v6: append temperature + humidity (4 bytes).
+             * Prefer SHT3x (real RH), fall back to BME280/BMP280.
+             * If neither is present we still ship zeros so the decoder
+             * can rely on the fixed payload length. */
+            int16_t  temp_cdeg = 0;
+            uint16_t hum_cpct  = 0;
+            if (sht3x_present() && sht3x_sample() == 0) {
+                temp_cdeg = sht3x_get_temp_cdeg();
+                hum_cpct  = sht3x_get_hum_cpct();
+            } else if (bme280_present() && bme280_sample() == 0) {
+                temp_cdeg = bme280_get_temp_cdeg();
+                hum_cpct  = bme280_get_hum_cpct();   /* 0 on BMP280 */
+            }
+            pkt.data[18] = (uint8_t)(temp_cdeg & 0xFF);
+            pkt.data[19] = (uint8_t)((uint16_t)temp_cdeg >> 8);
+            pkt.data[20] = (uint8_t)(hum_cpct  & 0xFF);
+            pkt.data[21] = (uint8_t)(hum_cpct  >> 8);
+            pkt.length = 4 + 22;  /* header + 22 bytes telemetry (v6) */
 
             write_packet(&pTxBuf, &pkt);
         }
@@ -169,7 +189,28 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             data_len = pkt->length - PACKET_HEADER_SIZE;
         uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
         uint8_t app_off = tbl_bytes;
-        if (data_len >= app_off + 18) {
+        if (data_len >= app_off + 22) {
+            /* v6: v5 fields + temp_cdeg(2,signed) + hum_cpct(2) */
+            int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
+            uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
+            uint16_t bat   = pkt->data[app_off+4] | ((uint16_t)pkt->data[app_off+5] << 8);
+            uint8_t  chg   = pkt->data[app_off+6];
+            uint8_t  txp   = pkt->data[app_off+7];
+            uint8_t  sf    = pkt->data[app_off+8];
+            int32_t  lat_udeg, lon_udeg;
+            memcpy(&lat_udeg, &pkt->data[app_off+9],  4);
+            memcpy(&lon_udeg, &pkt->data[app_off+13], 4);
+            uint8_t  fix   = pkt->data[app_off+17];
+            int16_t  tcd   = (int16_t)(pkt->data[app_off+18] | ((uint16_t)pkt->data[app_off+19] << 8));
+            uint16_t hcp   = pkt->data[app_off+20] | ((uint16_t)pkt->data[app_off+21] << 8);
+            snprintf(buf, sizeof(buf),
+                     "[BEACON] i_ma=%d bus=%u bat=%u chg=%u tx_pwr=%u sf=%u"
+                     " lat=%ld lon=%ld fix=%u temp_cdeg=%d hum_cpct=%u entries=%u\n",
+                     i_ma, bus, bat, chg, txp, sf,
+                     (long)lat_udeg, (long)lon_udeg, fix,
+                     tcd, hcp, pkt->mesh_tbl_entries);
+            print(buf);
+        } else if (data_len >= app_off + 18) {
             /* v5: v4 fields + lat_udeg(4) + lon_udeg(4) + fix_valid(1) */
             int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
             uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
@@ -369,6 +410,8 @@ void Reset_Handler(void) {
     spi_init();
     adc_init();
     ina219_init();
+    bme280_init();   /* external I2C header — PB6/PB7 bit-bang */
+    sht3x_init();    /* same bus; bb_i2c_init() is idempotent  */
     gps_init();
     usb_cdc_init();
     usb_cdc_set_rx_callback(usb_rx_handler);
