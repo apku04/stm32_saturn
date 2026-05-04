@@ -143,6 +143,27 @@ static void beaconHandler(void) {
             pkt.length = 4 + 22;  /* header + 22 bytes telemetry (v6) */
 
             write_packet(&pTxBuf, &pkt);
+
+            /* Self-print so the monitor can show this node's own readings
+             * (the local board never receives its own TX over the air).
+             * Format mirrors app_incoming so lora_monitor.py parses it. */
+            {
+                char b[200];
+                uint8_t self = get_mac_address();
+                snprintf(b, sizeof(b),
+                    "[RX] src=%u dst=255 rssi=0 prssi=0 snr=0 sf=%u freq=%lu type=0 seq=%u len=%u\n",
+                    self, radio_get_datarate(),
+                    (unsigned long)radio_get_channel(), seq, pkt.length);
+                print(b);
+                snprintf(b, sizeof(b),
+                    "[BEACON] i_ma=%d bus=%u bat=%u chg=%u tx_pwr=%u sf=%u"
+                    " lat=%ld lon=%ld fix=%u temp_cdeg=%d hum_cpct=%u entries=0\n",
+                    i_ma, bus_mv, bat_mv, chg,
+                    radio_get_tx_power(), radio_get_datarate(),
+                    (long)lat_udeg, (long)lon_udeg, gfix->valid ? 1u : 0u,
+                    temp_cdeg, hum_cpct);
+                print(b);
+            }
         }
     }
 }
@@ -455,6 +476,7 @@ void Reset_Handler(void) {
             network_interface(OUTGOING);
             mac_interface(INCOMING);
             mac_interface(OUTGOING);
+            mac_interface(RETX);
         }
     }
 }

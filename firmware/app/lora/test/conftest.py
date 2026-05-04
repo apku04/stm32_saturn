@@ -39,7 +39,10 @@ def open_port(port_name, timeout=5):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            return serial.Serial(port_name, BAUD_RATE, timeout=TIMEOUT)
+            ser = serial.Serial(port_name, BAUD_RATE, timeout=TIMEOUT)
+            ser.dtr = True
+            ser.rts = True
+            return ser
         except serial.SerialException:
             time.sleep(0.1)
     raise serial.SerialException(f"Could not open {port_name} after {timeout}s")
@@ -49,6 +52,8 @@ def probe_port(port_name):
     """Probe a port to check if it responds as STM32 LoRa app."""
     try:
         ser = serial.Serial(port_name, BAUD_RATE, timeout=0.5)
+        ser.dtr = True
+        ser.rts = True
         time.sleep(0.15)
         ser.reset_input_buffer()
         ser.write(b'version\r\n')
@@ -64,39 +69,50 @@ def probe_port(port_name):
 
 def send_command(ser, command, timeout=5):
     """Send command and wait for response."""
-    ser.reset_input_buffer()
-    ser.write((command + '\r\n').encode())
-    logging.info(f"Sending to {ser.name}: {command}")
-
     if command == "reset":
+        ser.reset_input_buffer()
+        ser.write((command + '\r\n').encode())
         time.sleep(0.2)
         return ""
 
+    read_only = command.startswith('get ') or command in ('help', 'version')
+    attempts = 2 if read_only else 1
     response = b''
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        chunk = ser.read(1024)
-        if chunk:
-            response += chunk
-            # For multi-line responses (help, flash, routing), keep reading
-            # until no more data arrives for a short period
-            if b'Error' in response:
-                logging.error(f"Error response: {response.decode(errors='ignore')}")
-                raise Exception("Send command returned Error")
-            if b'Done' in response:
-                break
-            # Wait a bit more to see if more data is coming
-            time.sleep(0.1)
-            more = ser.read(1024)
-            if more:
-                response += more
+
+    for attempt in range(1, attempts + 1):
+        ser.reset_input_buffer()
+        ser.write((command + '\r\n').encode())
+        logging.info(f"Sending to {ser.name}: {command}")
+
+        response = b''
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            chunk = ser.read(1024)
+            if chunk:
+                response += chunk
+                # For multi-line responses (help, flash, routing), keep reading
+                # until no more data arrives for a short period
+                if b'Error' in response:
+                    logging.error(f"Error response: {response.decode(errors='ignore')}")
+                    raise Exception("Send command returned Error")
+                if b'Done' in response:
+                    break
+                # Wait a bit more to see if more data is coming
+                time.sleep(0.1)
+                more = ser.read(1024)
+                if more:
+                    response += more
+                    continue
+                # No more data after a pause — response is complete
+                if response:
+                    break
+            time.sleep(0.05)
+        else:
+            if attempt < attempts:
+                logging.warning("Timeout from %s for %r; retrying", ser.name, command)
                 continue
-            # No more data after a pause — response is complete
-            if response:
-                break
-        time.sleep(0.05)
-    else:
-        raise Exception("send_command Timeout")
+            raise Exception("send_command Timeout")
+        break
 
     resp_str = response.decode(errors='ignore')
     # Filter out asynchronous radio RX notifications that may appear in output

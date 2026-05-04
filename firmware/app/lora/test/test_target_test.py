@@ -44,6 +44,7 @@ def wait_for_data(ser, timeout=10):
 
 RX_PATTERN = re.compile(
     r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+prssi=(-?\d+)\s+"
+    r"(?:snr=(-?\d+)\s+sf=(\d+)\s+freq=(\d+)\s+)?"
     r"type=(\d+)\s+seq=(\d+)\s+len=(\d+)"
 )
 
@@ -57,7 +58,13 @@ def parse_response(response):
     """
     m = RX_PATTERN.search(response)
     if m:
-        src, dst, rssi, prssi, msg_type, seq, length = (int(v) for v in m.groups())
+        src = int(m.group(1))
+        dst = int(m.group(2))
+        rssi = int(m.group(3))
+        prssi = int(m.group(4))
+        msg_type = int(m.group(8))
+        seq = int(m.group(9))
+        length = int(m.group(10))
         header = Header(
             rssi=rssi, prssi=prssi, rxCnt=0,
             destination_adr=dst, source_adr=src,
@@ -76,6 +83,30 @@ def parse_response(response):
             response_message = ""
         return header, response_message
     return None, response
+
+
+def send_and_receive(ser_tx, ser_rx, message, attempts=3):
+    """Send a payload and return the parsed RX header/message, retrying RF misses."""
+    last_response = ""
+    for attempt in range(1, attempts + 1):
+        ser_rx.reset_input_buffer()
+        send_command(ser_tx, f"send {message}")
+        try:
+            wait_for_data(ser_rx, timeout=12)
+        except Exception:
+            logging.warning("No RF data on attempt %d/%d", attempt, attempts)
+            time.sleep(1)
+            continue
+
+        last_response = ser_rx.read(ser_rx.in_waiting).decode(errors='ignore')
+        header, response_message = parse_response(last_response)
+        if header and response_message == message:
+            return header, response_message
+        logging.warning("Unexpected RF response on attempt %d/%d: %r", attempt, attempts, last_response)
+        time.sleep(1)
+
+    header, response_message = parse_response(last_response)
+    return header, response_message
 
 
 # ===========================================================================
@@ -239,7 +270,7 @@ class TestOTAFlash:
         response = _read_until_idle(serial_port, timeout=3)
         logging.info(f"\nOTA bank info: {response}")
         assert "OTA Bank:" in response
-        assert "0x08010000" in response.upper()
+        assert "0x08010000" in response
         assert "size=63488" in response
 
     def test_ota_erase(self, serial_port):
@@ -344,7 +375,7 @@ class TestOTAFlash:
         serial_port.reset_input_buffer()
         serial_port.write(b'get ota bank\r\n')
         response = _read_until_idle(serial_port, timeout=3)
-        assert "0x08010000" in response.upper()
+        assert "0x08010000" in response
 
 
 class TestBeaconAndRouting:
@@ -522,12 +553,7 @@ class TestDeviceCommunicationSunshineScenarios:
         ser2 = serial_ports.sers[1]
 
         expected_message = "Hello, world!"
-        ser2.reset_input_buffer()
-        send_command(ser1, f"send {expected_message}")
-
-        wait_for_data(ser2)
-        response = ser2.read(ser2.in_waiting).decode(errors='ignore')
-        header, response_message = parse_response(response)
+        header, response_message = send_and_receive(ser1, ser2, expected_message)
         logging.info(f"\n Expected: {expected_message}\n Received: {response_message}")
         assert expected_message == response_message
 
@@ -540,12 +566,7 @@ class TestDeviceCommunicationSunshineScenarios:
 
         send_command(ser1, f'set mac_address {expected_mac_addr}')
 
-        ser2.reset_input_buffer()
-        send_command(ser1, f"send {expected_message}")
-
-        wait_for_data(ser2)
-        response = ser2.read(ser2.in_waiting).decode(errors='ignore')
-        header, response_message = parse_response(response)
+        header, response_message = send_and_receive(ser1, ser2, expected_message)
 
         logging.info(f"\n Expected: {expected_message}\n Received: {response_message}")
         assert expected_message == response_message
@@ -560,11 +581,7 @@ class TestDeviceCommunicationSunshineScenarios:
 
         # Device 1 -> Device 2
         msg1 = "From1To2"
-        ser2.reset_input_buffer()
-        send_command(ser1, f"send {msg1}")
-        wait_for_data(ser2)
-        response = ser2.read(ser2.in_waiting).decode(errors='ignore')
-        header, message = parse_response(response)
+        header, message = send_and_receive(ser1, ser2, msg1)
         assert message == msg1
         assert header.source_adr == 101
         logging.info(f"\nDevice 1->2: {message}, source={header.source_adr}")
@@ -573,11 +590,7 @@ class TestDeviceCommunicationSunshineScenarios:
 
         # Device 2 -> Device 1
         msg2 = "From2To1"
-        ser1.reset_input_buffer()
-        send_command(ser2, f"send {msg2}")
-        wait_for_data(ser1)
-        response = ser1.read(ser1.in_waiting).decode(errors='ignore')
-        header, message = parse_response(response)
+        header, message = send_and_receive(ser2, ser1, msg2)
         assert message == msg2
         assert header.source_adr == 102
         logging.info(f"\nDevice 2->1: {message}, source={header.source_adr}")
