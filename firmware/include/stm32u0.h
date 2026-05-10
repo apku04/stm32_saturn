@@ -43,6 +43,11 @@
 #define RCC_CSR           (*(volatile uint32_t *)(RCC_BASE + 0x94))
 #define RCC_CRRCR         (*(volatile uint32_t *)(RCC_BASE + 0x98))
 
+/* RCC_CSR.RMVF (bit 23) — write 1 clears all reset-cause flags
+ * (LPWRRSTF/WWDGRSTF/IWDGRSTF/SFTRSTF/PWRRSTF(BOR)/PINRSTF/OBLRSTF in bits 24..31).
+ * We store the raw 32-bit snapshot and decode bits on the host side. */
+#define RCC_CSR_RMVF      (1u << 23)
+
 /* ---- CRS ---- */
 #define CRS_BASE          0x40006C00
 #define CRS_CR            (*(volatile uint32_t *)(CRS_BASE + 0x00))
@@ -174,6 +179,7 @@
 #define FLASH_BASE_REG    0x40022000
 #define FLASH_ACR         (*(volatile uint32_t *)(FLASH_BASE_REG + 0x00))
 #define FLASH_KEYR        (*(volatile uint32_t *)(FLASH_BASE_REG + 0x08))
+#define FLASH_OPTKEYR     (*(volatile uint32_t *)(FLASH_BASE_REG + 0x0C))
 #define FLASH_SR          (*(volatile uint32_t *)(FLASH_BASE_REG + 0x10))
 #define FLASH_CR          (*(volatile uint32_t *)(FLASH_BASE_REG + 0x14))
 #define FLASH_OPTR        (*(volatile uint32_t *)(FLASH_BASE_REG + 0x20))
@@ -181,6 +187,9 @@
 /* Flash keys */
 #define FLASH_KEY1        0x45670123
 #define FLASH_KEY2        0xCDEF89AB
+/* Option byte unlock keys (different from flash keys) */
+#define FLASH_OPTKEY1     0x08192A3B
+#define FLASH_OPTKEY2     0x4C5D6E7F
 
 /* Flash SR bits */
 #define FLASH_SR_BSY      (1 << 16)
@@ -190,7 +199,26 @@
 #define FLASH_CR_PG       (1 << 0)
 #define FLASH_CR_PER      (1 << 1)
 #define FLASH_CR_STRT     (1 << 16)
+#define FLASH_CR_OPTSTRT  (1 << 17)
+#define FLASH_CR_OBL_LAUNCH (1 << 27)
+#define FLASH_CR_OPTLOCK  (1 << 30)
 #define FLASH_CR_LOCK     (1 << 31)
+
+/* FLASH_OPTR bit positions (STM32U0) */
+#define FLASH_OPTR_BOR_EN_POS    8
+#define FLASH_OPTR_BOR_EN        (1u << 8)
+#define FLASH_OPTR_BOR_LEV_POS   9
+#define FLASH_OPTR_BOR_LEV_MSK   (3u << 9)
+
+/* ---- IWDG (Independent Watchdog) ---- */
+#define IWDG_BASE         0x40003000
+#define IWDG_KR           (*(volatile uint32_t *)(IWDG_BASE + 0x00))
+#define IWDG_PR           (*(volatile uint32_t *)(IWDG_BASE + 0x04))
+#define IWDG_RLR          (*(volatile uint32_t *)(IWDG_BASE + 0x08))
+#define IWDG_SR           (*(volatile uint32_t *)(IWDG_BASE + 0x0C))
+#define IWDG_KR_UNLOCK    0x5555
+#define IWDG_KR_START     0xCCCC
+#define IWDG_KR_REFRESH   0xAAAA
 
 /* EP RW bits mask */
 #define EP_RW_BITS        (USB_EP_TYPE | USB_EP_KIND | USB_EP_EA)

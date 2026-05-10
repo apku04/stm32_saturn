@@ -25,6 +25,8 @@
 #include "gps.h"
 #include "bme280.h"
 #include "sht3x.h"
+#include "ext_flash.h"
+#include "event_log.h"
 
 /* ---- Globals ---- */
 static uint16_t seq = 0;
@@ -32,10 +34,27 @@ static PacketBuffer pRxBuf, pTxBuf;
 
 extern uint8_t get_beacon_flag(void);
 
+/* ---- Brown-out / hang diagnostics ----
+ * Stored in .noinit RAM: survives soft / IWDG / BOR resets, lost on full
+ * power-cycle. Lets us answer 'why did MAC 44 wedge in the field?' from the
+ * gateway log alone (the values are telemetered in every beacon). */
+#define DIAG_MAGIC 0xD1A6B007u
+typedef struct {
+    uint32_t magic;
+    uint32_t boot_count;        /* increments every reset since power-up */
+    uint32_t last_reset_csr;    /* RCC_CSR snapshot from THIS reset */
+    uint32_t last_init_stage;   /* highest stage reached on PREVIOUS boot */
+    uint32_t init_stage;        /* live stage counter for THIS boot */
+    uint32_t last_uptime_ms;    /* uptime saved each beacon — survives reset */
+} diag_t;
+__attribute__((section(".noinit"))) static diag_t diag;
+
 /* ---- Forward declarations ---- */
 static void clock_init(void);
 static void led_init(void);
 static void gpio_init(void);
+static void wdt_init(void);
+static void wdt_kick(void);
 static void beaconHandler(void);
 static void dcf_app_interface(Direction dir, PacketBuffer *rx, PacketBuffer *tx);
 static void app_outgoing(Packet *pkt, PacketBuffer *txbuf);
@@ -73,6 +92,28 @@ static void gpio_init(void) {
     /* Enable GPIOA and GPIOB clocks */
     RCC_IOPENR |= (1 << 0) | (1 << 1);
     for (volatile int i = 0; i < 10; i++) __asm__("nop");
+}
+
+/* ---- IWDG: independent watchdog (LSI ~32 kHz) ----
+ * PR=4 (/64), RLR=4000 → ~8 s timeout.
+ * Recovers from any code path that hangs longer than 8s — including
+ * SX1262 BUSY hangs and brownout-induced corruption that survives
+ * after the rail stabilises.
+ */
+static void wdt_init(void) {
+    IWDG_KR = IWDG_KR_START;     /* Start the watchdog (also enables LSI) */
+    IWDG_KR = IWDG_KR_UNLOCK;    /* Unlock PR/RLR */
+    /* Wait for any pending update to complete before writing */
+    while (IWDG_SR & 0x07);
+    IWDG_PR  = 4;                /* Prescaler /64 → 500 Hz */
+    while (IWDG_SR & 0x01);      /* PVU */
+    IWDG_RLR = 4000;             /* 4000 / 500 Hz = 8 s */
+    while (IWDG_SR & 0x02);      /* RVU */
+    IWDG_KR = IWDG_KR_REFRESH;   /* Initial refresh */
+}
+
+static void wdt_kick(void) {
+    IWDG_KR = IWDG_KR_REFRESH;
 }
 
 /* ---- USB receive callback → terminal ---- */
@@ -129,6 +170,10 @@ static void beaconHandler(void) {
              * can rely on the fixed payload length. */
             int16_t  temp_cdeg = 0;
             uint16_t hum_cpct  = 0;
+            /* If SHT3x didn't come up at boot (e.g. sensor wasn't powered yet
+             * or was in a confused state after DFU reflash), retry init each
+             * beacon cycle so it can self-recover without a power cycle. */
+            if (!sht3x_present()) sht3x_init();
             if (sht3x_present() && sht3x_sample() == 0) {
                 temp_cdeg = sht3x_get_temp_cdeg();
                 hum_cpct  = sht3x_get_hum_cpct();
@@ -140,7 +185,27 @@ static void beaconHandler(void) {
             pkt.data[19] = (uint8_t)((uint16_t)temp_cdeg >> 8);
             pkt.data[20] = (uint8_t)(hum_cpct  & 0xFF);
             pkt.data[21] = (uint8_t)(hum_cpct  >> 8);
-            pkt.length = 4 + 22;  /* header + 22 bytes telemetry (v6) */
+
+            /* v7: append brown-out / hang diagnostics (4 bytes).
+             * Lets the gateway see WHY a remote node restarted without
+             * needing to retrieve it. Compact reset_cause = bits 23..30
+             * of the CSR snapshot, packed into one byte (LSB = bit 23). */
+            uint8_t rst_compact = (uint8_t)((diag.last_reset_csr >> 23) & 0xFF);
+            uint8_t boot_cnt    = diag.boot_count > 255u ? 255u
+                                                          : (uint8_t)diag.boot_count;
+            uint8_t last_stage  = (uint8_t)diag.last_init_stage;
+            uint32_t up_ms      = get_tick_ms();
+            uint32_t up_min32   = up_ms / 60000u;
+            uint8_t  up_min     = up_min32 > 255u ? 255u : (uint8_t)up_min32;
+            pkt.data[22] = rst_compact;
+            pkt.data[23] = boot_cnt;
+            pkt.data[24] = last_stage;
+            pkt.data[25] = up_min;
+            pkt.length = 4 + 26;  /* header + 26 bytes telemetry (v7) */
+
+            /* Persist current uptime so a future reset can report 'last
+             * known good uptime' — helps diagnose intermittent dies. */
+            diag.last_uptime_ms = up_ms;
 
             write_packet(&pTxBuf, &pkt);
 
@@ -157,11 +222,13 @@ static void beaconHandler(void) {
                 print(b);
                 snprintf(b, sizeof(b),
                     "[BEACON] i_ma=%d bus=%u bat=%u chg=%u tx_pwr=%u sf=%u"
-                    " lat=%ld lon=%ld fix=%u temp_cdeg=%d hum_cpct=%u entries=0\n",
+                    " lat=%ld lon=%ld fix=%u temp_cdeg=%d hum_cpct=%u"
+                    " rst=0x%02X boot=%u last_stage=%u up_min=%u entries=0\n",
                     i_ma, bus_mv, bat_mv, chg,
                     radio_get_tx_power(), radio_get_datarate(),
                     (long)lat_udeg, (long)lon_udeg, gfix->valid ? 1u : 0u,
-                    temp_cdeg, hum_cpct);
+                    temp_cdeg, hum_cpct,
+                    rst_compact, boot_cnt, last_stage, up_min);
                 print(b);
             }
         }
@@ -194,8 +261,12 @@ static void app_outgoing(Packet *pkt, PacketBuffer *txbuf) {
 }
 
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
-    /* Print received packet info */
-    char buf[160];
+    /* Print received packet info.
+     * Buffer must fit the longest [BEACON] decode line (v7 with all fields
+     * populated is ~170 chars including the trailing newline). 160 was too
+     * small and the snprintf silently truncated "entries=0\n" off the end,
+     * causing host-side regex to drop the entire beacon. */
+    char buf[224];
     snprintf(buf, sizeof(buf),
              "[RX] src=%u dst=%u rssi=%d prssi=%d snr=%d sf=%u freq=%lu type=%u seq=%u len=%u\n",
              pkt->source_adr, pkt->destination_adr, pkt->rssi, pkt->prssi,
@@ -210,7 +281,34 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             data_len = pkt->length - PACKET_HEADER_SIZE;
         uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
         uint8_t app_off = tbl_bytes;
-        if (data_len >= app_off + 22) {
+        if (data_len >= app_off + 26) {
+            /* v7: v6 fields + rst(1) + boot(1) + last_stage(1) + up_min(1) */
+            int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
+            uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
+            uint16_t bat   = pkt->data[app_off+4] | ((uint16_t)pkt->data[app_off+5] << 8);
+            uint8_t  chg   = pkt->data[app_off+6];
+            uint8_t  txp   = pkt->data[app_off+7];
+            uint8_t  sf    = pkt->data[app_off+8];
+            int32_t  lat_udeg, lon_udeg;
+            memcpy(&lat_udeg, &pkt->data[app_off+9],  4);
+            memcpy(&lon_udeg, &pkt->data[app_off+13], 4);
+            uint8_t  fix   = pkt->data[app_off+17];
+            int16_t  tcd   = (int16_t)(pkt->data[app_off+18] | ((uint16_t)pkt->data[app_off+19] << 8));
+            uint16_t hcp   = pkt->data[app_off+20] | ((uint16_t)pkt->data[app_off+21] << 8);
+            uint8_t  rst   = pkt->data[app_off+22];
+            uint8_t  boot  = pkt->data[app_off+23];
+            uint8_t  lstg  = pkt->data[app_off+24];
+            uint8_t  upm   = pkt->data[app_off+25];
+            snprintf(buf, sizeof(buf),
+                     "[BEACON] i_ma=%d bus=%u bat=%u chg=%u tx_pwr=%u sf=%u"
+                     " lat=%ld lon=%ld fix=%u temp_cdeg=%d hum_cpct=%u"
+                     " rst=0x%02X boot=%u last_stage=%u up_min=%u entries=%u\n",
+                     i_ma, bus, bat, chg, txp, sf,
+                     (long)lat_udeg, (long)lon_udeg, fix,
+                     tcd, hcp, rst, boot, lstg, upm,
+                     pkt->mesh_tbl_entries);
+            print(buf);
+        } else if (data_len >= app_off + 22) {
             /* v6: v5 fields + temp_cdeg(2,signed) + hum_cpct(2) */
             int16_t  i_ma  = (int16_t)(pkt->data[app_off] | ((uint16_t)pkt->data[app_off+1] << 8));
             uint16_t bus   = pkt->data[app_off+2] | ((uint16_t)pkt->data[app_off+3] << 8);
@@ -414,28 +512,64 @@ void Reset_Handler(void) {
     /* Set VTOR to our vector table — critical after DFU bootloader return */
     SCB_VTOR = 0x08000000u;
 
-    /* Copy .data, zero .bss */
+    /* Snapshot reset cause BEFORE anything else can touch RCC_CSR. */
+    uint32_t csr_snapshot = RCC_CSR;
+    RCC_CSR |= RCC_CSR_RMVF;   /* clear flags so next reset reads cleanly */
+
+    /* Copy .data, zero .bss (does NOT touch .noinit — see linker script) */
     extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss;
     uint32_t *src = &_sidata, *dst = &_sdata;
     while (dst < &_edata) *dst++ = *src++;
     dst = &_sbss;
     while (dst < &_ebss) *dst++ = 0;
 
+    /* Update .noinit diagnostic state */
+    if (diag.magic == DIAG_MAGIC) {
+        diag.boot_count++;
+        diag.last_init_stage = diag.init_stage;   /* how far we got last time */
+    } else {
+        diag.magic = DIAG_MAGIC;
+        diag.boot_count = 1;
+        diag.last_init_stage = 0;
+        diag.last_uptime_ms = 0;
+    }
+    diag.last_reset_csr = csr_snapshot;
+    diag.init_stage = 1;   /* entered Reset_Handler */
+
     /* Init hardware */
     clock_init();
     led_init();
     gpio_init();
+    wdt_init();      /* Start IWDG immediately so any later hang is recoverable */
+    diag.init_stage = 2;
     led1_on();
 
-    timer_init();
-    spi_init();
-    adc_init();
-    ina219_init();
-    bme280_init();   /* external I2C header — PB6/PB7 bit-bang */
-    sht3x_init();    /* same bus; bb_i2c_init() is idempotent  */
-    gps_init();
-    usb_cdc_init();
+    timer_init();      diag.init_stage = 3;
+    spi_init();        diag.init_stage = 4;
+    adc_init();        diag.init_stage = 5;
+    ina219_init();     diag.init_stage = 6;
+    wdt_kick();
+    bme280_init();     diag.init_stage = 7;   /* external I2C header — PB6/PB7 bit-bang */
+    sht3x_init();      diag.init_stage = 8;   /* same bus; bb_i2c_init() is idempotent  */
+    ext_flash_init();  diag.init_stage = 9;
+    /* Persistent boot log: append a record describing THIS reset (and what
+     * happened on the previous boot). Done immediately after ext_flash so a
+     * later init failure on the same boot is also captured by the NEXT boot's
+     * record. We log this_init_stage=9 because that's where we are right now;
+     * the host can see we got at least this far. reached_main is taken from
+     * the previous boot's high-water-mark (init_stage==0xFF means main-loop). */
+    event_log_init();
+    event_log_append(diag.boot_count,
+                     diag.last_reset_csr,
+                     diag.last_uptime_ms,
+                     (uint8_t)diag.last_init_stage,
+                     (uint8_t)diag.init_stage,
+                     diag.last_init_stage == 0xFFu);
+    wdt_kick();
+    gps_init();        diag.init_stage = 10;
+    usb_cdc_init();    diag.init_stage = 11;
     usb_cdc_set_rx_callback(usb_rx_handler);
+    wdt_kick();
 
     /* Init protocol stack */
     init_packet_buffer(&pRxBuf);
@@ -447,10 +581,18 @@ void Reset_Handler(void) {
     network_layer_init(&pRxBuf, &pTxBuf);
     mac_layer_init(&pRxBuf, &pTxBuf);
 
-    /* Print node address so the user can identify this board */
+    /* Print node address + reset diagnostics so the user can identify this board
+     * AND see why it (re)started — visible on local CDC and helpful when bench
+     * debugging. The same fields are telemetered in beacons (see beaconHandler). */
     {
-        char abuf[32];
-        snprintf(abuf, sizeof(abuf), "[BOOT] node_addr=%u\n", get_mac_address());
+        char abuf[96];
+        snprintf(abuf, sizeof(abuf),
+                 "[BOOT] node_addr=%u rst=0x%08lX boot=%lu last_stage=%lu last_uptime_ms=%lu\n",
+                 get_mac_address(),
+                 (unsigned long)diag.last_reset_csr,
+                 (unsigned long)diag.boot_count,
+                 (unsigned long)diag.last_init_stage,
+                 (unsigned long)diag.last_uptime_ms);
         print(abuf);
     }
 
@@ -460,9 +602,13 @@ void Reset_Handler(void) {
         radio_start_rx();
         radio_ok = 1;
     }
+    diag.init_stage = 12;
+    wdt_kick();
 
     /* Main loop — fully polled, same structure as PIC24 */
+    diag.init_stage = 0xFF;   /* reached main loop successfully */
     while (1) {
+        wdt_kick();
         usb_cdc_poll();
         timer_poll();
         gps_poll();

@@ -147,12 +147,61 @@ static int i2c_read_reg_impl(uint32_t base, uint8_t addr, uint8_t reg, uint16_t 
     return 0;
 }
 
+/* ---- Bus-stuck recovery (9-clock unstick) ----
+ * If a slave was mid-transaction at the moment of an MCU reset, SDA can be
+ * held low forever \u2014 the I2C peripheral will then sit in BUSY and every
+ * transfer times out, even after re-init. The standard recovery is to drive
+ * SCL manually for up to 9 clocks until the slave releases SDA, then send a
+ * STOP condition. Pins are PB8=SCL, PB9=SDA. Called BEFORE switching them to
+ * AF mode. */
+static void i2c_bus_unstick(void)
+{
+    /* Configure PB8/PB9 as open-drain GPIO outputs with pull-ups, idle high */
+    RCC_IOPENR |= (1 << 1);
+
+    uint32_t m = GPIO_MODER(GPIOB_BASE);
+    m &= ~((3 << (INA_SCL_PIN * 2)) | (3 << (INA_SDA_PIN * 2)));
+    m |=  ((1 << (INA_SCL_PIN * 2)) | (1 << (INA_SDA_PIN * 2)));  /* output */
+    GPIO_MODER(GPIOB_BASE) = m;
+
+    GPIO_OTYPER(GPIOB_BASE) |= (1 << INA_SCL_PIN) | (1 << INA_SDA_PIN);
+
+    uint32_t p = GPIO_PUPDR(GPIOB_BASE);
+    p &= ~((3 << (INA_SCL_PIN * 2)) | (3 << (INA_SDA_PIN * 2)));
+    p |=  ((1 << (INA_SCL_PIN * 2)) | (1 << (INA_SDA_PIN * 2)));  /* pull-up */
+    GPIO_PUPDR(GPIOB_BASE) = p;
+
+    /* Release both lines */
+    GPIO_BSRR(GPIOB_BASE) = (1 << INA_SCL_PIN) | (1 << INA_SDA_PIN);
+    for (volatile int i = 0; i < 1000; i++) __asm__("nop");
+
+    /* If SDA is held low, clock SCL up to 9 times until it releases */
+    for (int i = 0; i < 9; i++) {
+        if (GPIO_IDR(GPIOB_BASE) & (1 << INA_SDA_PIN)) break;
+        /* SCL low */
+        GPIO_BSRR(GPIOB_BASE) = (1 << (INA_SCL_PIN + 16));
+        for (volatile int d = 0; d < 200; d++) __asm__("nop");
+        /* SCL high */
+        GPIO_BSRR(GPIOB_BASE) = (1 << INA_SCL_PIN);
+        for (volatile int d = 0; d < 200; d++) __asm__("nop");
+    }
+
+    /* Generate STOP: SDA low while SCL high, then SDA high */
+    GPIO_BSRR(GPIOB_BASE) = (1 << (INA_SDA_PIN + 16));
+    for (volatile int d = 0; d < 200; d++) __asm__("nop");
+    GPIO_BSRR(GPIOB_BASE) = (1 << INA_SDA_PIN);
+    for (volatile int d = 0; d < 200; d++) __asm__("nop");
+}
+
 /* ---- I2C1 public API (PB8/PB9, AF4) ---- */
 
 void i2c_init(void)
 {
     /* Enable GPIOB clock */
     RCC_IOPENR |= (1 << 1);
+
+    /* Bus-stuck recovery before switching pins to peripheral AF */
+    i2c_bus_unstick();
 
     /* Enable I2C1 clock (bit 21 of APBENR1) */
     RCC_APBENR1 |= (1 << 21);
@@ -207,6 +256,10 @@ void i2c2_init(void)
 {
     /* Enable GPIOB clock */
     RCC_IOPENR |= (1 << 1);
+
+    /* Bus-stuck recovery before switching pins to peripheral AF \u2014
+     * critical after IWDG reset where the INA219 may have been mid-byte. */
+    i2c_bus_unstick();
 
     /* Enable I2C1 clock (bit 21 of APBENR1) — PB8/PB9 AF4 routes to I2C1 */
     RCC_APBENR1 |= (1 << 21);

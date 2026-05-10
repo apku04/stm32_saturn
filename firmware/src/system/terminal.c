@@ -24,6 +24,8 @@
 #include "sht3x.h"
 #include "flash_ota.h"
 #include "gps.h"
+#include "ext_flash.h"
+#include "event_log.h"
 
 uint8_t sniffer = 0;
 
@@ -108,6 +110,11 @@ static void menu(uint16_t argc, uint8_t *argv[]) {
         send_commands(argc, argv);
     } else if (strcmp(cmd, "reset") == 0) {
         softwareReset();
+    } else if (strcmp(cmd, "clear") == 0 && argc >= 2 &&
+               strcmp((const char *)argv[1], "log") == 0) {
+        /* `clear log` — wipe the persistent boot/reset event log. */
+        event_log_clear();
+        print("event log cleared\n");
     } else if (strcmp(cmd, "dfu") == 0) {
         jump_to_bootloader();
     } else if (strcmp(cmd, "version") == 0) {
@@ -144,6 +151,61 @@ static uint8_t set_commands(uint16_t argc, uint8_t *argv[]) {
         writeFlash(&flash_data);
         print("Done\n");
         return 0;
+    }
+
+    /* --- BOR (Brown-Out Reset) one-time option byte programming ---
+     * Usage: set bor <0..3>
+     *   0 = BOR Level 1 (~1.7 V)  -- effectively off
+     *   1 = BOR Level 2 (~2.0 V)
+     *   2 = BOR Level 3 (~2.5 V)  -- recommended for solar+Li-ion node
+     *   3 = BOR Level 4 (~2.7 V)
+     * After programming, OBL_LAUNCH triggers a reset and the new
+     * threshold is enforced on every subsequent power cycle.
+     * This is permanent (survives flash erase/reprogram).
+     */
+    if (argc >= 3 && strcmp((const char *)argv[1], "bor") == 0) {
+        uint8_t lev = (uint8_t)atoi((const char *)argv[2]);
+        if (lev > 3) { print("Error: bor must be 0..3\n"); return 1; }
+
+        /* Wait for any flash op to settle */
+        while (FLASH_SR & FLASH_SR_BSY);
+
+        /* Unlock flash control */
+        if (FLASH_CR & FLASH_CR_LOCK) {
+            FLASH_KEYR = FLASH_KEY1;
+            FLASH_KEYR = FLASH_KEY2;
+        }
+        /* Unlock option bytes */
+        FLASH_OPTKEYR = FLASH_OPTKEY1;
+        FLASH_OPTKEYR = FLASH_OPTKEY2;
+
+        if (FLASH_CR & FLASH_CR_OPTLOCK) {
+            print("Error: option bytes still locked\n");
+            FLASH_CR |= FLASH_CR_LOCK;
+            return 1;
+        }
+
+        /* Read-modify-write OPTR: enable BOR + set level */
+        uint32_t optr = FLASH_OPTR;
+        optr |=  FLASH_OPTR_BOR_EN;
+        optr &= ~FLASH_OPTR_BOR_LEV_MSK;
+        optr |=  ((uint32_t)lev << FLASH_OPTR_BOR_LEV_POS) & FLASH_OPTR_BOR_LEV_MSK;
+        FLASH_OPTR = optr;
+
+        /* Trigger option byte program */
+        FLASH_CR |= FLASH_CR_OPTSTRT;
+        while (FLASH_SR & FLASH_SR_BSY);
+
+        snprintf(s, sizeof(s),
+                 "BOR programmed: level=%u OPTR=0x%08lX\n"
+                 "Triggering OBL_LAUNCH (board will reset)...\n",
+                 lev, (unsigned long)FLASH_OPTR);
+        print(s);
+
+        /* OBL_LAUNCH: reload option bytes from flash → MCU resets */
+        FLASH_CR |= FLASH_CR_OBL_LAUNCH;
+        /* Should never reach here */
+        while (1);
     }
 
     /* --- OTA commands --- */
@@ -264,6 +326,15 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
                  p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7], p[8],p[9],p[10],p[11]);
         print(buf);
 
+    } else if (strcmp((const char *)argv[1], "bor") == 0) {
+        uint32_t optr = FLASH_OPTR;
+        uint8_t en  = (optr & FLASH_OPTR_BOR_EN) ? 1 : 0;
+        uint8_t lev = (uint8_t)((optr & FLASH_OPTR_BOR_LEV_MSK) >> FLASH_OPTR_BOR_LEV_POS);
+        const char *t[4] = { "~1.7V (off)", "~2.0V", "~2.5V", "~2.7V" };
+        snprintf(buf, sizeof(buf),
+                 "BOR: en=%u level=%u (%s) OPTR=0x%08lX\n",
+                 en, lev, t[lev], (unsigned long)optr);
+        print(buf);
     } else if (strcmp((const char *)argv[1], "flash") == 0) {
         deviceData_t fData;
         uint8_t *p = (uint8_t *)&fData;
@@ -419,6 +490,14 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         }
         print("Done\n");
     } else if (strcmp((const char *)argv[1], "bbscan") == 0) {
+        /* First report idle line levels — empty bbscan with both lines high
+         * means slaves are dead/missing; SCL=0 means hardware fault that
+         * software can't recover from. */
+        uint8_t scl = 0, sda = 0;
+        bb_i2c_probe_idle(&scl, &sda);
+        snprintf(buf, sizeof(buf),
+                 "bb_i2c idle: SCL=%u SDA=%u  (both should be 1)\n", scl, sda);
+        print(buf);
         print("Scanning bit-bang I2C (PB6/PB7)...\n");
         for (uint8_t a = 0x08; a <= 0x77; a++) {
             uint8_t dummy;
@@ -510,6 +589,62 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
             } else {
                 snprintf(buf, sizeof(buf), "OTA Pending: NO\r\n");
             }
+            print(buf);
+        }
+    } else if (strcmp((const char *)argv[1], "extflash") == 0) {
+        uint32_t id = ext_flash_read_id();
+        snprintf(buf, sizeof(buf), "JEDEC ID: 0x%06lX (%s)\n",
+                 (unsigned long)id,
+                 id == 0xEF4016 ? "W25Q32" : "unknown");
+        print(buf);
+
+        /* Write/read test at the LAST sector — sector 0 is reserved for the
+         * persistent boot event log, so we mustn't erase it here. The W25Q32
+         * is 4 MB; last sector starts at (4 MB - 4 KB) = 0x3FF000. */
+        uint32_t test_addr = EXT_FLASH_TOTAL_SIZE - EXT_FLASH_SECTOR_SIZE;
+        ext_flash_erase_sector(test_addr);
+        uint8_t wr[16] = {0xDE,0xAD,0xBE,0xEF, 0x01,0x02,0x03,0x04,
+                          0xA5,0x5A,0x55,0xAA, 0x12,0x34,0x56,0x78};
+        ext_flash_write(test_addr, wr, 16);
+        uint8_t rd[16];
+        ext_flash_read(test_addr, rd, 16);
+        int pass = 1;
+        for (int i = 0; i < 16; i++) {
+            if (rd[i] != wr[i]) { pass = 0; break; }
+        }
+        snprintf(buf, sizeof(buf), "Write/Read test @0x%06lX: %s\n",
+                 (unsigned long)test_addr, pass ? "PASS" : "FAIL");
+        print(buf);
+        print("Read: ");
+        for (int i = 0; i < 16; i++) {
+            char hx[4];
+            snprintf(hx, sizeof(hx), "%02X ", rd[i]);
+            print(hx);
+        }
+        print("\n");
+    } else if (strcmp((const char *)argv[1], "log") == 0) {
+        /* Dump the persistent boot/reset event log. One line per record;
+         * fields match what the host already decodes from beacon v7 so the
+         * same regex can parse this output offline. */
+        snprintf(buf, sizeof(buf),
+                 "event log: count=%lu head=%lu (cap=%u)\n",
+                 (unsigned long)event_log_count(),
+                 (unsigned long)event_log_head(),
+                 EVENT_LOG_REC_COUNT);
+        print(buf);
+        for (uint32_t i = 0; i < EVENT_LOG_REC_COUNT; i++) {
+            event_log_rec_t r;
+            if (!event_log_read(i, &r))
+                break;   /* slot empty → end of valid records */
+            snprintf(buf, sizeof(buf),
+                     "  [%lu] boot=%lu rst=0x%08lX last_stage=%u this_stage=%u "
+                     "up_ms=%lu reached_main=%u\n",
+                     (unsigned long)i,
+                     (unsigned long)r.boot_count,
+                     (unsigned long)r.rst_csr,
+                     r.last_init_stage, r.this_init_stage,
+                     (unsigned long)r.last_uptime_ms,
+                     (r.flags & 0x0001) ? 1 : 0);
             print(buf);
         }
     } else if (strcmp((const char *)argv[1], "i2cread") == 0 && argc >= 4) {

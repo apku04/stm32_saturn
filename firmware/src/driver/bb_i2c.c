@@ -37,6 +37,19 @@ static int scl_wait_high(void)
     return -1;
 }
 
+void bb_i2c_probe_idle(uint8_t *scl, uint8_t *sda)
+{
+    /* Release both lines (switch back to input-with-pull-up). */
+    sda_high();
+    scl_high();
+    /* Settle: rise time on a 4.7k pull-up against ~10pF is ~50ns; give
+     * plenty of margin for board capacitance + slow scope probes. */
+    for (volatile int i = 0; i < 1000; i++) __asm__("nop");
+    uint32_t idr = GPIO_IDR(GPIOB_BASE);
+    if (scl) *scl = (uint8_t)((idr >> SCL_PIN) & 1u);
+    if (sda) *sda = (uint8_t)((idr >> SDA_PIN) & 1u);
+}
+
 void bb_i2c_init(void)
 {
     /* Enable GPIOB clock */

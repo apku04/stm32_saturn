@@ -55,6 +55,18 @@ SECTIONS
         _ebss = .;
     } >RAM
 
+    /* .noinit — preserved across soft/IWDG/BOR resets, lost on full power-cycle.
+     * Reset_Handler must NOT zero this region (it lies outside _sbss.._ebss). */
+    .noinit (NOLOAD) :
+    {
+        . = ALIGN(4);
+        _snoinit = .;
+        KEEP(*(.noinit))
+        KEEP(*(.noinit*))
+        . = ALIGN(4);
+        _enoinit = .;
+    } >RAM
+
     end = .;
     _end = .;
 

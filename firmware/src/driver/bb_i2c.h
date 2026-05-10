@@ -26,4 +26,11 @@ int  bb_i2c_write_then_read(uint8_t addr7, uint8_t reg,
 /* Convenience: write one register followed by one data byte. */
 int  bb_i2c_write_reg8(uint8_t addr7, uint8_t reg, uint8_t val);
 
+/* Diagnostic: release both lines and report their idle levels.
+ * Both should read 1 on a healthy bus (pull-ups + no slave holding low).
+ * scl=0 means SCL is shorted/held low (unrecoverable in software).
+ * sda=0 means a slave is mid-byte; bb_i2c_init's 9-clock recovery should
+ * have unstuck it — if it persists, slave is dead or pull-up is missing. */
+void bb_i2c_probe_idle(uint8_t *scl, uint8_t *sda);
+
 #endif /* BB_I2C_H */
