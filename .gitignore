@@ -5,6 +5,10 @@
 build/
 __pycache__/
 .pytest_cache/
+# Gateway runtime state — SQLite + WAL/SHM
+tools/lora_web/beacons.db
+tools/lora_web/beacons.db-wal
+tools/lora_web/beacons.db-shm
 # Squad: ignore runtime state (logs, inbox, sessions)
 .squad/orchestration-log/
 .squad/log/

@@ -63,6 +63,13 @@ RX_PATTERN = re.compile(
 RX_PATTERN_LEGACY = re.compile(
     r"\[RX\]\s+src=(\d+)\s+dst=(\d+)\s+rssi=(-?\d+)\s+type=(\d+)\s+len=(\d+)"
 )
+BEACON_PATTERN_V7 = re.compile(
+    r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+"
+    r"tx_pwr=(\d+)\s+sf=(\d+)\s+lat=(-?\d+)\s+lon=(-?\d+)\s+fix=(\d+)\s+"
+    r"temp_cdeg=(-?\d+)\s+hum_cpct=(\d+)\s+"
+    r"rst=0x([0-9A-Fa-f]+)\s+boot=(\d+)\s+last_stage=(\d+)\s+up_min=(\d+)\s+"
+    r"entries=(\d+)"
+)
 BEACON_PATTERN_V6 = re.compile(
     r"\[BEACON\]\s+i_ma=(-?\d+)\s+bus=(\d+)\s+bat=(\d+)\s+chg=(\d+)\s+"
     r"tx_pwr=(\d+)\s+sf=(\d+)\s+lat=(-?\d+)\s+lon=(-?\d+)\s+fix=(\d+)\s+"
@@ -576,7 +583,15 @@ class LoRaMonitor:
     # -------------------------------------------------------- Serial read
     def _reader_loop(self):
         buf = ""
-        pending_rx = None  # last parsed [RX] waiting for potential [BEACON] line
+        pending_rx = None      # last parsed [RX] waiting for [BEACON] line
+        last_rx_header = None  # most recent [RX] (kept even after flushing) so
+                               # an orphan [BEACON] can still be attributed
+        pending_age = 0        # consecutive empty reads since pending_rx was set
+        # The over-the-air RX path can have a measurable gap between the [RX]
+        # print and the [BEACON] print (separate USB CDC chunks). Wait long
+        # enough that the beacon almost always lands before we give up
+        # pairing. Non-beacon packets (type != 0) are flushed immediately.
+        PENDING_RX_GRACE = 50  # ~5s of empty 100ms reads
 
         while self.running:
             try:
@@ -584,14 +599,24 @@ class LoRaMonitor:
                     break
                 raw = self.serial_port.read(512)
                 if not raw:
-                    # If we have a pending RX without beacon follow-up, flush it
                     if pending_rx:
-                        self.root.after(0, self._add_rx_packet, pending_rx, None)
-                        pending_rx = None
+                        pending_age += 1
+                        if pending_age >= PENDING_RX_GRACE:
+                            self.root.after(0, self._add_rx_packet, pending_rx, None)
+                            pending_rx = None
+                            pending_age = 0
                     continue
                 self.byte_count += len(raw)
                 text = raw.decode("ascii", errors="replace")
                 buf += text
+                pending_age = 0  # got fresh data, reset the grace counter
+
+                # The MCU's [RX] and [BEACON] prints can interleave on the
+                # CDC TX buffer when a packet arrives mid-print, producing
+                # lines like "...freq=8680000[RX] src=44 ...". Inject a
+                # newline before every [RX]/[BEACON] marker so each shows
+                # up as its own line to the parser.
+                buf = buf.replace("[RX]", "\n[RX]").replace("[BEACON]", "\n[BEACON]")
 
                 while "\n" in buf:
                     line, buf = buf.split("\n", 1)
@@ -610,31 +635,60 @@ class LoRaMonitor:
                         continue
 
                     # Check for [BEACON] line (follows a [RX] with type=0)
-                    bcn_v6 = BEACON_PATTERN_V6.match(line)
-                    bcn_v5 = BEACON_PATTERN_V5.match(line) if not bcn_v6 else None
-                    bcn_v4 = BEACON_PATTERN_V4.match(line) if not (bcn_v6 or bcn_v5) else None
-                    bcn_v3 = BEACON_PATTERN_V3.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4) else None
-                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3) else None
-                    bcn = BEACON_PATTERN.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2) else None
-                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn) else None
-                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not (bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg) else None
-                    if bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
-                        match = bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min
-                        version = "v6" if bcn_v6 else ("v5" if bcn_v5 else ("v4" if bcn_v4 else ("v3" if bcn_v3 else None)))
+                    bcn_v7 = BEACON_PATTERN_V7.match(line)
+                    bcn_v6 = BEACON_PATTERN_V6.match(line) if not bcn_v7 else None
+                    bcn_v5 = BEACON_PATTERN_V5.match(line) if not (bcn_v7 or bcn_v6) else None
+                    bcn_v4 = BEACON_PATTERN_V4.match(line) if not (bcn_v7 or bcn_v6 or bcn_v5) else None
+                    bcn_v3 = BEACON_PATTERN_V3.match(line) if not (bcn_v7 or bcn_v6 or bcn_v5 or bcn_v4) else None
+                    bcn_v2 = BEACON_PATTERN_V2.match(line) if not (bcn_v7 or bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3) else None
+                    bcn = BEACON_PATTERN.match(line) if not (bcn_v7 or bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2) else None
+                    bcn_leg = BEACON_PATTERN_LEGACY.match(line) if not (bcn_v7 or bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn) else None
+                    bcn_min = BEACON_PATTERN_MINIMAL.match(line) if not (bcn_v7 or bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg) else None
+                    if bcn_v7 or bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min:
+                        match = bcn_v7 or bcn_v6 or bcn_v5 or bcn_v4 or bcn_v3 or bcn_v2 or bcn or bcn_leg or bcn_min
+                        version = ("v7" if bcn_v7 else ("v6" if bcn_v6 else ("v5" if bcn_v5 else ("v4" if bcn_v4 else ("v3" if bcn_v3 else None)))))
                         beacon_data = self._parse_beacon(match, version=version)
                         if pending_rx:
                             self.root.after(0, self._add_rx_packet, pending_rx, beacon_data)
                             pending_rx = None
+                            pending_age = 0
+                        elif last_rx_header is not None:
+                            # Late beacon: pair with the most recent RX header
+                            # we saw so the row shows the real src/RSSI/etc.
+                            self.root.after(0, self._add_rx_packet,
+                                            dict(last_rx_header), beacon_data)
+                        else:
+                            # Truly orphan beacon (no RX header ever seen):
+                            # show it anyway so it isn't silently lost.
+                            synthetic = {
+                                "src": "?", "dst": "255",
+                                "rssi": "—", "prssi": "—",
+                                "snr": "—", "sf": beacon_data.get("sf", "—"),
+                                "freq": "—", "type": "0", "seq": "—",
+                                "len": "—",
+                            }
+                            self.root.after(0, self._add_rx_packet, synthetic, beacon_data)
                         continue
 
-                    # Flush any pending RX that wasn't followed by [BEACON]
-                    if pending_rx:
+                    # Try to match an [RX] header before flushing — that way
+                    # back-to-back RX lines aren't double-printed.
+                    rx_match = (RX_PATTERN_V2.match(line)
+                                or RX_PATTERN.match(line)
+                                or RX_PATTERN_LEGACY.match(line))
+
+                    # Any other line means the previous pending RX won't get
+                    # a beacon — flush it now (only for non-beacon types;
+                    # type 0 keeps waiting via the grace timer).
+                    if pending_rx and (rx_match or pending_rx.get("type") != "0"):
                         self.root.after(0, self._add_rx_packet, pending_rx, None)
                         pending_rx = None
+                        pending_age = 0
 
-                    # Check for [RX] line — v2 (with snr/sf/freq) first
-                    m = RX_PATTERN_V2.match(line)
-                    if m:
+                    if rx_match is None:
+                        continue
+
+                    m = rx_match
+                    if m.re is RX_PATTERN_V2:
                         pending_rx = {
                             "src": m.group(1), "dst": m.group(2),
                             "rssi": m.group(3), "prssi": m.group(4),
@@ -642,10 +696,7 @@ class LoRaMonitor:
                             "type": m.group(8), "seq": m.group(9),
                             "len": m.group(10),
                         }
-                        continue
-
-                    m = RX_PATTERN.match(line)
-                    if m:
+                    elif m.re is RX_PATTERN:
                         pending_rx = {
                             "src": m.group(1), "dst": m.group(2),
                             "rssi": m.group(3), "prssi": m.group(4),
@@ -653,10 +704,7 @@ class LoRaMonitor:
                             "type": m.group(5), "seq": m.group(6),
                             "len": m.group(7),
                         }
-                        continue
-
-                    m = RX_PATTERN_LEGACY.match(line)
-                    if m:
+                    else:  # RX_PATTERN_LEGACY
                         pending_rx = {
                             "src": m.group(1), "dst": m.group(2),
                             "rssi": m.group(3), "prssi": "—",
@@ -664,7 +712,8 @@ class LoRaMonitor:
                             "type": m.group(4), "seq": "—",
                             "len": m.group(5),
                         }
-                        continue
+                    last_rx_header = pending_rx
+                    pending_age = 0
 
             except (serial.SerialException, OSError):
                 self.root.after(0, self._disconnect)
@@ -674,6 +723,16 @@ class LoRaMonitor:
 
     def _parse_beacon(self, m, version=None):
         groups = m.groups()
+        if version == "v7" and len(groups) == 16:
+            # v7: v6 + rst(hex) + boot + last_stage + up_min
+            return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],
+                    "chg": groups[3], "tx_pwr": groups[4], "sf": groups[5],
+                    "lat_udeg": int(groups[6]), "lon_udeg": int(groups[7]),
+                    "fix": int(groups[8]),
+                    "temp_cdeg": int(groups[9]), "hum_cpct": int(groups[10]),
+                    "rst": int(groups[11], 16), "boot": int(groups[12]),
+                    "last_stage": int(groups[13]), "up_min": int(groups[14]),
+                    "entries": groups[15]}
         if version == "v6" and len(groups) == 12:
             # v6: v5 + temp_cdeg + hum_cpct
             return {"i_ma": groups[0], "bus": groups[1], "bat": groups[2],

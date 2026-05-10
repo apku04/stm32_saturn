@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Saturn LoRa Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg:#0f172a; --panel:#1e293b; --border:#334155;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8;
+    --good:#10b981; --warn:#f59e0b; --bad:#ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg); color:var(--text);
+  }
+  header {
+    padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+  }
+  header h1 { margin:0; font-size:18px; font-weight:600; }
+  header .muted { color:var(--muted); font-size:12px; }
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  select, button {
+    background:var(--bg); color:var(--text); border:1px solid var(--border);
+    padding:6px 10px; border-radius:6px; font-size:13px;
+  }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:var(--accent); color:#0f172a; border-color:var(--accent); font-weight:600; }
+  main { padding:16px 20px; }
+  .nodes-bar {
+    display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;
+  }
+  .node-chip {
+    padding:8px 12px; background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; cursor:pointer; min-width:130px;
+    transition:all 0.15s;
+  }
+  .node-chip:hover { border-color:var(--accent); }
+  .node-chip.active { border-color:var(--accent); background:#0c4a6e; }
+  .node-chip .src { font-weight:700; font-size:14px; }
+  .node-chip .meta { color:var(--muted); font-size:11px; margin-top:2px; }
+  .node-chip .stale { color:var(--warn); }
+  .node-chip .offline { color:var(--bad); }
+
+  .summary {
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+    gap:10px; margin-bottom:16px;
+  }
+  .stat {
+    background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:10px 12px;
+  }
+  .stat .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; }
+  .stat .value { font-size:20px; font-weight:700; margin-top:4px; }
+  .stat .unit { font-size:13px; color:var(--muted); margin-left:3px; font-weight:400; }
+
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:14px; }
+  .chart {
+    background:var(--panel); border:1px solid var(--border);
+    border-radius:8px; padding:8px;
+  }
+  .chart-title {
+    color:var(--muted); font-size:12px; padding:4px 8px 0; text-transform:uppercase; letter-spacing:0.5px;
+  }
+  .placeholder {
+    text-align:center; color:var(--muted); padding:40px 20px;
+    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+  }
+  .footer { color:var(--muted); font-size:11px; text-align:center; margin-top:24px; padding:10px; }
+
+  .map-section {
+    margin-top:16px;
+  }
+  .map-section .chart-title {
+    color:var(--muted); font-size:12px; padding:4px 8px 0; text-transform:uppercase; letter-spacing:0.5px;
+  }
+  #mapContainer {
+    height:450px; border-radius:8px; border:1px solid var(--border);
+    background:var(--panel);
+  }
+  /* Leaflet dark filter */
+  .leaflet-tile-pane { filter: brightness(0.7) contrast(1.1) saturate(0.3); }
+  .leaflet-control-zoom a {
+    background:var(--panel)!important; color:var(--text)!important;
+    border-color:var(--border)!important;
+  }
+  .leaflet-control-attribution { background:rgba(15,23,42,0.7)!important; color:var(--muted)!important; }
+  .leaflet-control-attribution a { color:var(--accent)!important; }
+  .map-popup { font-family:inherit; font-size:13px; line-height:1.5; }
+  .map-popup .mac { font-weight:700; font-size:14px; }
+  .map-popup .offline-label { color:var(--bad); font-weight:600; }
+  .map-popup .stale-label { color:var(--warn); font-weight:600; }
+  .leaflet-tooltip-dark {
+    background:var(--panel); color:var(--text); border:1px solid var(--border);
+    font-size:11px; font-weight:700; padding:2px 6px; border-radius:4px;
+  }
+  .leaflet-tooltip-dark::before { border-top-color:var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1>📡 Saturn LoRa Dashboard</h1>
+  <div class="controls">
+    <label class="muted">Range:</label>
+    <select id="range">
+      <option value="1">Last 1 hour</option>
+      <option value="6">Last 6 hours</option>
+      <option value="24" selected>Last 24 hours</option>
+      <option value="72">Last 3 days</option>
+      <option value="168">Last 7 days</option>
+      <option value="720">Last 30 days</option>
+      <option value="8760">Last year</option>
+    </select>
+    <label class="muted">Auto refresh:</label>
+    <select id="refresh">
+      <option value="0">Off</option>
+      <option value="10" selected>10 s</option>
+      <option value="30">30 s</option>
+      <option value="60">60 s</option>
+    </select>
+    <button id="refreshNow">Refresh now</button>
+    <span class="muted" id="lastUpdate">—</span>
+  </div>
+</header>
+
+<main>
+  <div class="nodes-bar" id="nodesBar">
+    <div class="placeholder">Loading nodes…</div>
+  </div>
+
+  <div id="dashboard" style="display:none;">
+    <div class="summary" id="summary"></div>
+    <div class="charts" id="charts">
+      <div class="chart"><div class="chart-title">Temperature</div><div id="chart-temp" style="height:280px;"></div></div>
+      <div class="chart"><div class="chart-title">Humidity</div><div id="chart-hum" style="height:280px;"></div></div>
+      <div class="chart"><div class="chart-title">RSSI / SNR</div><div id="chart-link" style="height:280px;"></div></div>
+      <div class="chart"><div class="chart-title">Battery / Bus voltage</div><div id="chart-volt" style="height:280px;"></div></div>
+      <div class="chart"><div class="chart-title">INA219 current (mA) &amp; power (mW)</div><div id="chart-power" style="height:280px;"></div></div>
+      <div class="chart"><div class="chart-title">TX power / SF</div><div id="chart-tx" style="height:280px;"></div></div>
+    </div>
+  </div>
+
+  <div id="mapSection" class="map-section" style="display:none;">
+    <div class="chart-title">Node Map — GPS positions from beacons</div>
+    <div id="mapContainer"></div>
+  </div>
+
+  <div id="emptyState" class="placeholder" style="display:none;">
+    No beacons received yet. Make sure the receiver is connected and transmitters are sending.
+  </div>
+
+  <div class="footer">
+    Saturn LoRa Web Dashboard · drag to zoom, double-click to reset · data persisted to SQLite
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let nodes = [];
+let activeSrc = null;
+let refreshTimer = null;
+const layoutDark = {
+  paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
+  font:{color:'#e2e8f0', size:11},
+  margin:{l:50,r:20,t:10,b:35},
+  xaxis:{gridcolor:'#334155', zerolinecolor:'#334155'},
+  yaxis:{gridcolor:'#334155', zerolinecolor:'#334155'},
+  legend:{orientation:'h', y:-0.2},
+  hovermode:'x unified',
+};
+const plotlyConfig = {
+  displaylogo:false, responsive:true,
+  modeBarButtonsToRemove:['lasso2d','select2d','toggleSpikelines'],
+};
+
+function fmtAge(sec) {
+  if (sec == null) return '—';
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec/60) + 'm';
+  if (sec < 86400) return Math.floor(sec/3600) + 'h';
+  return Math.floor(sec/86400) + 'd';
+}
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts*1000);
+  return d.toLocaleString();
+}
+
+async function loadNodes() {
+  const r = await fetch('/api/nodes');
+  const j = await r.json();
+  nodes = j.nodes || [];
+  const now = j.now;
+  const bar = $('nodesBar');
+  if (nodes.length === 0) {
+    bar.innerHTML = '<div class="placeholder">No nodes have transmitted beacons yet.</div>';
+    $('dashboard').style.display = 'none';
+    $('emptyState').style.display = 'block';
+    return;
+  }
+  $('emptyState').style.display = 'none';
+  bar.innerHTML = '';
+  for (const n of nodes) {
+    const age = now - n.last_seen;
+    const cls = age > 86400 ? 'offline' : (age > 600 ? 'stale' : '');
+    const div = document.createElement('div');
+    div.className = 'node-chip' + (n.src === activeSrc ? ' active' : '');
+    div.innerHTML = `
+      <div class="src">MAC ${n.src}</div>
+      <div class="meta ${cls}">last: ${fmtAge(age)} ago · ${n.count} beacons</div>
+    `;
+    div.onclick = () => selectNode(n.src);
+    bar.appendChild(div);
+  }
+  if (activeSrc === null && nodes.length > 0) {
+    selectNode(nodes[0].src);
+  }
+}
+
+function selectNode(src) {
+  activeSrc = src;
+  document.querySelectorAll('.node-chip').forEach((el, i) => {
+    el.classList.toggle('active', nodes[i] && nodes[i].src === src);
+  });
+  $('dashboard').style.display = 'block';
+  refreshData();
+}
+
+function statCard(label, value, unit='') {
+  return `<div class="stat"><div class="label">${label}</div>
+          <div class="value">${value}<span class="unit">${unit}</span></div></div>`;
+}
+
+function chargeStr(c) {
+  return ['Off','Charging','Done','Fault'][c] ?? String(c);
+}
+
+async function refreshData() {
+  if (activeSrc === null) return;
+  const hours = parseFloat($('range').value);
+  const [latestR, seriesR] = await Promise.all([
+    fetch(`/api/latest?src=${activeSrc}`).then(r => r.json()),
+    fetch(`/api/series?src=${activeSrc}&hours=${hours}`).then(r => r.json()),
+  ]);
+
+  const lat = latestR.latest;
+  const sum = $('summary');
+  if (!lat) {
+    sum.innerHTML = '<div class="placeholder">No data for this node yet.</div>';
+  } else {
+    const now = latestR.now;
+    const age = now - lat.ts;
+    const fmt = (v, d=2) => (v == null ? '—' : v.toFixed(d));
+    sum.innerHTML = [
+      statCard('Last seen', fmtAge(age) + ' ago'),
+      statCard('Temperature', lat.temp_cdeg != null ? fmt(lat.temp_cdeg/100) : '—', '°C'),
+      statCard('Humidity', lat.hum_cpct != null ? fmt(lat.hum_cpct/100, 1) : '—', '%'),
+      statCard('RSSI', lat.rssi != null ? lat.rssi : '—', ' dBm'),
+      statCard('SNR', lat.snr != null ? lat.snr : '—', ' dB'),
+      statCard('Bus voltage', lat.bus_mv != null ? fmt(lat.bus_mv/1000) : '—', ' V'),
+      statCard('Battery', lat.bat_mv != null ? fmt(lat.bat_mv/1000) : '—', ' V'),
+      statCard('Current', lat.i_ma != null ? lat.i_ma : '—', ' mA'),
+      statCard('Charge', lat.chg_str ?? '—'),
+      statCard('TX pwr / SF', `${lat.tx_pwr ?? '—'} / ${lat.sf ?? '—'}`),
+    ].join('');
+  }
+
+  // Series → plotly
+  const d = seriesR.data;
+  const x = d.ts.map(t => new Date(t*1000));
+  const has = (arr) => arr && arr.some(v => v != null);
+
+  const trace = (name, y, color, opts={}) => ({
+    x, y, name, mode:'lines+markers', line:{color, width:2}, marker:{size:4}, ...opts,
+  });
+
+  Plotly.react('chart-temp',
+    has(d.temp_c) ? [trace('Temp °C', d.temp_c, '#ef4444')] : [],
+    {...layoutDark, yaxis:{...layoutDark.yaxis, title:'°C'}}, plotlyConfig);
+
+  Plotly.react('chart-hum',
+    has(d.hum_pct) ? [trace('Humidity %', d.hum_pct, '#3b82f6')] : [],
+    {...layoutDark, yaxis:{...layoutDark.yaxis, title:'%RH', range:[0,100]}}, plotlyConfig);
+
+  Plotly.react('chart-link', [
+      ...(has(d.rssi) ? [trace('RSSI dBm', d.rssi, '#38bdf8')] : []),
+      ...(has(d.prssi) ? [trace('pRSSI dBm', d.prssi, '#a78bfa')] : []),
+      ...(has(d.snr) ? [trace('SNR dB', d.snr, '#10b981', {yaxis:'y2'})] : []),
+    ],
+    {...layoutDark,
+      yaxis:{...layoutDark.yaxis, title:'RSSI dBm'},
+      yaxis2:{title:'SNR dB', overlaying:'y', side:'right',
+              gridcolor:'transparent', zerolinecolor:'transparent'},
+    }, plotlyConfig);
+
+  Plotly.react('chart-volt', [
+      ...(has(d.bus_v) ? [trace('Bus V', d.bus_v, '#10b981')] : []),
+      ...(has(d.bat_v) ? [trace('Battery V', d.bat_v, '#f59e0b')] : []),
+    ],
+    {...layoutDark, yaxis:{...layoutDark.yaxis, title:'Volts'}}, plotlyConfig);
+
+  Plotly.react('chart-power', [
+      ...(has(d.i_ma) ? [trace('Current mA', d.i_ma, '#38bdf8')] : []),
+      ...(has(d.p_mw) ? [trace('Power mW', d.p_mw, '#a78bfa', {yaxis:'y2'})] : []),
+    ],
+    {...layoutDark,
+      yaxis:{...layoutDark.yaxis, title:'mA'},
+      yaxis2:{title:'mW', overlaying:'y', side:'right',
+              gridcolor:'transparent', zerolinecolor:'transparent'},
+    }, plotlyConfig);
+
+  Plotly.react('chart-tx', [
+      ...(has(d.tx_pwr) ? [trace('TX power dBm', d.tx_pwr, '#f59e0b')] : []),
+      ...(has(d.sf) ? [trace('SF', d.sf, '#38bdf8', {yaxis:'y2'})] : []),
+    ],
+    {...layoutDark,
+      yaxis:{...layoutDark.yaxis, title:'TX dBm'},
+      yaxis2:{title:'SF', overlaying:'y', side:'right',
+              gridcolor:'transparent', zerolinecolor:'transparent'},
+    }, plotlyConfig);
+
+  $('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+function setupRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  const sec = parseInt($('refresh').value, 10);
+  if (sec > 0) {
+    refreshTimer = setInterval(() => { loadNodes(); refreshData(); refreshMap(); }, sec*1000);
+  }
+}
+
+$('refresh').addEventListener('change', setupRefresh);
+$('range').addEventListener('change', refreshData);
+$('refreshNow').addEventListener('click', () => { loadNodes(); refreshData(); });
+
+// ---- Map ----
+let leafletMap = null;
+let mapMarkers = [];
+
+function initMap() {
+  if (leafletMap) return;
+  leafletMap = L.map('mapContainer').setView([56.0, 10.0], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a>',
+  }).addTo(leafletMap);
+}
+
+function makeIcon(color, opacity) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="40" viewBox="0 0 28 40">
+    <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 26 14 26s14-15.5 14-26C28 6.3 21.7 0 14 0z"
+          fill="${color}" fill-opacity="${opacity}" stroke="#fff" stroke-width="1.5" stroke-opacity="${opacity}"/>
+    <circle cx="14" cy="14" r="6" fill="#fff" fill-opacity="${opacity}"/>
+  </svg>`;
+  return L.icon({
+    iconUrl: 'data:image/svg+xml;base64,' + btoa(svg),
+    iconSize: [28, 40],
+    iconAnchor: [14, 40],
+    popupAnchor: [0, -36],
+  });
+}
+
+async function refreshMap() {
+  const r = await fetch('/api/map');
+  const j = await r.json();
+  const mapNodes = j.nodes || [];
+
+  if (mapNodes.length === 0) {
+    $('mapSection').style.display = 'none';
+    return;
+  }
+
+  $('mapSection').style.display = 'block';
+  initMap();
+
+  // clear old markers
+  mapMarkers.forEach(m => leafletMap.removeLayer(m));
+  mapMarkers = [];
+
+  const bounds = [];
+  for (const n of mapNodes) {
+    const age = n.age;
+    const isOffline = age > 86400;
+    const isStale = age > 600;
+
+    // color: green=online, amber=stale, grey=offline
+    let color, opacity;
+    if (isOffline) { color = '#6b7280'; opacity = 0.45; }
+    else if (isStale) { color = '#f59e0b'; opacity = 0.7; }
+    else { color = '#10b981'; opacity = 1.0; }
+
+    const icon = makeIcon(color, opacity);
+    const marker = L.marker([n.lat, n.lon], { icon, opacity: 1.0 }).addTo(leafletMap);
+
+    let statusLabel = '';
+    if (isOffline) statusLabel = '<span class="offline-label">OFFLINE</span> ';
+    else if (isStale) statusLabel = '<span class="stale-label">STALE</span> ';
+
+    marker.bindPopup(
+      `<div class="map-popup">
+        <div class="mac">MAC ${n.src}</div>
+        ${statusLabel}${fmtAge(age)} ago<br>
+        RSSI: <b>${n.rssi ?? '—'}</b> dBm &nbsp; SNR: <b>${n.snr ?? '—'}</b> dB<br>
+        <span style="color:#94a3b8;font-size:11px">${n.lat.toFixed(6)}, ${n.lon.toFixed(6)}</span>
+      </div>`
+    );
+
+    // Permanent tooltip with MAC
+    marker.bindTooltip(`MAC ${n.src}`, {
+      permanent: true, direction: 'top', offset: [0, -42],
+      className: 'leaflet-tooltip-dark',
+    });
+
+    bounds.push([n.lat, n.lon]);
+    mapMarkers.push(marker);
+  }
+
+  if (bounds.length > 0) {
+    if (bounds.length === 1) {
+      leafletMap.setView(bounds[0], 15);
+    } else {
+      leafletMap.fitBounds(bounds, { padding: [40, 40] });
+    }
+  }
+
+  // Leaflet needs a nudge after display:none → block
+  setTimeout(() => leafletMap.invalidateSize(), 100);
+}
+
+loadNodes().then(() => { setupRefresh(); refreshMap(); });
+</script>
+</body>
+</html>
