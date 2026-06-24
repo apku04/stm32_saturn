@@ -1,0 +1,25 @@
+[Unit]
+Description=Saturn LoRa Web Dashboard (gateway)
+Documentation=https://github.com/  (internal project)
+# Wait for the network so the HTTP bind on 0.0.0.0 works, and give USB CDC
+# a moment to enumerate the receiver after boot.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=dialout
+WorkingDirectory=/home/pi/lora_web
+# No --port: auto-detect survives ttyACM0<->ttyACM1 re-enumeration on reset.
+ExecStart=/usr/bin/python3 /home/pi/lora_web/server.py --http-port 8080
+# The server has its own serial reconnect loop; if it ever exits, restart it.
+Restart=always
+RestartSec=3
+# Logs go to the journal: `journalctl -u lora_web -f`
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lora_web
+
+[Install]
+WantedBy=multi-user.target

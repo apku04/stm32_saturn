@@ -15,7 +15,9 @@
  *   12    4    last_uptime_ms (last beacon-saved uptime from prev boot)
  *   16    1    last_init_stage (highest stage from prev boot)
  *   17    1    this_init_stage (init_stage when log was written, currently 9..)
- *   18   14    reserved (0xFF, available for CRC/extension)
+ *   18    1    last_main_chk   (main-loop checkpoint where prev boot hung; 0
+ *                              if it never reached the main loop)
+ *   19   13    reserved (0xFF, available for CRC/extension)
  *
  * The host can decode rst_csr exactly the same way as the live beacon v7
  * field, so log decoding reuses existing tooling.
@@ -38,7 +40,8 @@ typedef struct {
     uint32_t last_uptime_ms;
     uint8_t  last_init_stage;
     uint8_t  this_init_stage;
-    uint8_t  reserved[14];
+    uint8_t  last_main_chk;
+    uint8_t  reserved[13];
 } __attribute__((packed)) event_log_rec_t;
 
 _Static_assert(sizeof(event_log_rec_t) == EVENT_LOG_REC_SIZE,
@@ -55,7 +58,8 @@ void event_log_append(uint32_t boot_count,
                       uint32_t last_uptime_ms,
                       uint8_t  last_init_stage,
                       uint8_t  this_init_stage,
-                      uint8_t  reached_main);
+                      uint8_t  reached_main,
+                      uint8_t  last_main_chk);
 
 /* Read record by absolute slot index (0..EVENT_LOG_REC_COUNT-1).
  * Returns 1 if the slot has a valid record, 0 otherwise. */

@@ -93,3 +93,31 @@ void writeFlashByte(addrEnum addr, uint8_t value) {
     FLASH_CR &= ~FLASH_CR_PG;
     flash_lock();
 }
+
+void writeFlashParamByte(addrEnum addr, uint8_t value) {
+    uint8_t slots[UID_FINGERPRINT + 1];
+
+    for (uint8_t i = 0; i <= UID_FINGERPRINT; i++)
+        readFlash((addrEnum)i, &slots[i]);
+    slots[addr] = value;
+
+    flash_unlock();
+    flash_wait();
+
+    FLASH_CR = FLASH_CR_PER | ((uint32_t)CONFIG_PAGE_NUM << 3);
+    FLASH_CR |= FLASH_CR_STRT;
+    flash_wait();
+    FLASH_CR &= ~FLASH_CR_PER;
+    FLASH_SR = FLASH_SR_EOP;
+
+    FLASH_CR |= FLASH_CR_PG;
+    for (uint8_t i = 0; i <= UID_FINGERPRINT; i++) {
+        volatile uint32_t *dst = (volatile uint32_t *)(CONFIG_PAGE_ADDR + (uint32_t)i * 8);
+        dst[0] = slots[i];
+        dst[1] = 0xFFFFFFFF;
+        flash_wait();
+        FLASH_SR = FLASH_SR_EOP;
+    }
+    FLASH_CR &= ~FLASH_CR_PG;
+    flash_lock();
+}

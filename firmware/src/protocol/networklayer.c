@@ -193,17 +193,40 @@ static GLOB_RET network_outgoing(Packet *pkt) {
     pkt->mesh_src = get_mac_address();
 
     if (pkt->control_app == BEACON || pkt->control_app == PING || pkt->control_app == PONG ||
-        pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK) {
+        pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK ||
+        pkt->control_app == OTA_PREPARE || pkt->control_app == OTA_BEGIN ||
+        pkt->control_app == OTA_DATA || pkt->control_app == OTA_END ||
+        pkt->control_app == OTA_ACK) {
         if (pkt->control_app == PING || pkt->control_app == PONG ||
-            pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK)
+            pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK ||
+            pkt->control_app == OTA_PREPARE || pkt->control_app == OTA_BEGIN ||
+            pkt->control_app == OTA_DATA || pkt->control_app == OTA_END ||
+            pkt->control_app == OTA_ACK)
             pkt->TTL = 0;
         if (pkt->control_app == BEACON)
             age_routing_table();
 
-        /* Beacons carry telemetry at data[0]; don't prepend routing table
-           (avoids offset mismatch on the RX decoder). PING/PONG still
-           carry the table for mesh discovery. */
-        pkt->mesh_tbl_entries = (pkt->control_app == BEACON) ? 0 : Nlme.num_entries;
+        /* Beacons are the periodic broadcast that every neighbour hears, so
+         * they carry the routing table — this is how each node builds its
+         * table from beacons (passive/proactive mesh discovery). The table is
+         * prepended to data[0]; telemetry is shifted after it and the RX
+         * decoder skips `mesh_tbl_entries*3` bytes to find it.
+         *
+         * Cap the entries attached to a BEACON so the table + telemetry + CRC
+         * still fit pkt->data[50]. Telemetry (v7) is 26 bytes and the CRC is
+         * 1 byte, leaving room for (50-26-1)/3 = 7 entries.
+         *
+         * Control packets stay small and unshifted. They do not need topology
+         * information, and keeping their app payload at data[0] makes remote
+         * configuration and ACK parsing robust. */
+        if (pkt->control_app == BEACON) {
+            const uint8_t max_beacon_entries =
+                (uint8_t)((sizeof(pkt->data) - 26u - 1u) / 3u);   /* = 7 */
+            pkt->mesh_tbl_entries = (Nlme.num_entries > max_beacon_entries)
+                                    ? max_beacon_entries : Nlme.num_entries;
+        } else {
+            pkt->mesh_tbl_entries = 0;
+        }
         pkt->destination_adr = BROADCAST;
 
         if (pkt->mesh_tbl_entries > 0) {
@@ -214,12 +237,12 @@ static GLOB_RET network_outgoing(Packet *pkt) {
 
             memset(pkt->data, 0, 50);
 
-            for (int i = 0; i < Nlme.num_entries; i++) {
+            for (int i = 0; i < pkt->mesh_tbl_entries; i++) {
                 pkt->data[i * 3]     = Nlme.routing_table[i].destination;
                 pkt->data[i * 3 + 1] = Nlme.routing_table[i].next_hop;
                 pkt->data[i * 3 + 2] = Nlme.routing_table[i].hop_count;
             }
-            uint8_t table_length = Nlme.num_entries * 3;
+            uint8_t table_length = pkt->mesh_tbl_entries * 3;
 
             if (app_data_len > 0 && app_data_len <= sizeof(app_backup))
                 memcpy(&pkt->data[table_length], app_backup, app_data_len);

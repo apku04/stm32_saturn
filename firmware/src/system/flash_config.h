@@ -10,5 +10,6 @@
 void writeFlash(deviceData_t *data);
 void readFlash(addrEnum addr, uint8_t *read_data);
 void writeFlashByte(addrEnum addr, uint8_t value);
+void writeFlashParamByte(addrEnum addr, uint8_t value);
 
 #endif /* FLASH_CONFIG_H */

@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saturn Dev Dashboard</title>
+<style>
+  :root {
+    --bg:#0b1220; --panel:#0f1a2c; --panel2:#142238; --border:#1f2f4a;
+    --fg:#e6edf7; --muted:#7d8aa3; --accent:#5ab1ff; --accent2:#9be15d;
+    --warn:#ffb454; --bad:#ff6c6c; --ok:#65e3a4;
+    --mono:'JetBrains Mono','Fira Mono',Menlo,Consolas,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    font-size:14px; height:100%; }
+  body { display:flex; flex-direction:column; min-height:100vh;
+    background:
+      radial-gradient(1100px 540px at 100% -10%, rgba(90,177,255,.08), transparent 60%),
+      radial-gradient(900px 460px at -10% 0%, rgba(155,225,93,.05), transparent 55%),
+      var(--bg);
+    background-attachment:fixed; }
+
+  /* ---- Top app bar ---------------------------------------------------- */
+  header {
+    position:sticky; top:0; z-index:30;
+    display:flex; align-items:center; gap:14px;
+    padding:11px 20px;
+    background:linear-gradient(180deg, rgba(15,26,44,.86), rgba(8,16,30,.66));
+    backdrop-filter:saturate(160%) blur(16px);
+    -webkit-backdrop-filter:saturate(160%) blur(16px);
+    border-bottom:1px solid rgba(255,255,255,.06);
+    box-shadow:0 1px 0 rgba(255,255,255,.04), 0 14px 40px -28px #000;
+  }
+  header .brand { display:flex; align-items:center; gap:11px; }
+  header .brand .logo {
+    width:34px; height:34px; border-radius:10px; display:grid; place-items:center;
+    font-size:17px; background:linear-gradient(135deg,var(--accent),#3f7fd6);
+    box-shadow:0 8px 20px -8px rgba(90,177,255,.6), inset 0 1px 0 rgba(255,255,255,.3);
+  }
+  header h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:-.01em; }
+  header .badge { background:rgba(255,255,255,.04); border:1px solid var(--border);
+    padding:3px 10px; border-radius:999px; color:var(--muted); font-size:11.5px; font-weight:600; }
+  header .spacer { flex:1; }
+  header .clock { color:var(--muted); font-family:var(--mono); font-size:12px; }
+  header nav a {
+    text-decoration:none; padding:6px 13px; border-radius:9px; font-size:12.5px;
+    font-weight:600; transition:all .15s ease;
+  }
+
+  main {
+    display:grid;
+    grid-template-columns: 360px 1fr;
+    gap:14px; padding:16px;
+    flex:1; min-height:0;
+  }
+  .col { display:flex; flex-direction:column; gap:14px; min-height:0; }
+  .panel { background:linear-gradient(180deg, rgba(15,26,44,.92), rgba(20,34,56,.6));
+    border:1px solid var(--border); border-radius:14px;
+    padding:14px 16px; box-shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 30px -20px rgba(0,0,0,.7); }
+  .panel h2 { font-size:11px; font-weight:700; text-transform:uppercase;
+    letter-spacing:1.2px; color:var(--muted); margin:0 0 12px; display:flex;
+    align-items:center; gap:8px; }
+  .panel h2 .right { margin-left:auto; }
+  button, select, input[type=text] {
+    background:var(--panel2); color:var(--fg); border:1px solid var(--border);
+    border-radius:9px; padding:7px 13px; font:inherit;
+  }
+  button { cursor:pointer; font-weight:600; transition:background .15s, border-color .15s, transform .1s; }
+  button:hover:not(:disabled) { background:#1b2c4a; border-color:var(--accent); }
+  button:active:not(:disabled) { transform:translateY(1px); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.primary { background:linear-gradient(135deg,#2e7bd6,#1a4d83); border-color:transparent; color:#fff;
+    box-shadow:0 6px 18px -8px rgba(46,123,214,.7); }
+  button.primary:hover:not(:disabled) { filter:brightness(1.08); }
+  button.danger { background:#5a1f1f; border-color:#9b3232; }
+  button.danger:hover:not(:disabled) { background:#7a2828; }
+  .small { font-size:12px; padding:5px 10px; border-radius:8px; }
+
+  /* Device list */
+  .devlist { display:flex; flex-direction:column; gap:8px; }
+  .dev { padding:9px 11px; border:1px solid var(--border); border-radius:6px;
+    background:var(--panel2); cursor:pointer; transition:border-color .1s; }
+  .dev:hover { border-color:var(--accent); }
+  .dev.selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .dev .row1 { display:flex; align-items:center; gap:8px; }
+  .dev .name { font-family:var(--mono); font-weight:600; }
+  .dev .pill { font-size:11px; padding:1px 6px; border-radius:8px;
+    background:#16365a; color:var(--accent); border:1px solid #2a5a96; }
+  .dev .pill.dfu { background:#553a17; color:var(--warn); border-color:#9b6c30; }
+  .dev .pill.other { background:#2a2a2a; color:var(--muted); border-color:#444; }
+  .dev .meta { color:var(--muted); font-size:11px; margin-top:3px; font-family:var(--mono); }
+
+  /* Info table */
+  .info { display:grid; grid-template-columns:auto 1fr; gap:4px 10px;
+    font-family:var(--mono); font-size:12px; }
+  .info .k { color:var(--muted); }
+  .info .v { word-break:break-all; }
+
+  /* Firmware list */
+  .fwlist { display:flex; flex-direction:column; gap:6px; max-height:240px; overflow-y:auto; }
+  .fw { padding:6px 9px; border:1px solid var(--border); border-radius:5px;
+    background:var(--panel2); cursor:pointer; }
+  .fw:hover { border-color:var(--accent); }
+  .fw.selected { border-color:var(--accent2); box-shadow:0 0 0 1px var(--accent2) inset; }
+  .fw .name { font-family:var(--mono); font-weight:600; }
+  .fw .meta { color:var(--muted); font-size:11px; margin-top:2px; }
+
+  /* Console */
+  .console-wrap { display:flex; flex-direction:column; flex:1; min-height:0; }
+  .console {
+    flex:1; min-height:0; background:#050a14; color:#cfe1f5;
+    border:1px solid var(--border); border-radius:6px;
+    font-family:var(--mono); font-size:12px; padding:8px 10px;
+    overflow-y:auto; white-space:pre-wrap; word-break:break-word;
+  }
+  .console .l-tx { color:var(--accent2); }
+  .console .l-rx { color:#cfe1f5; }
+  .console .l-info { color:var(--muted); }
+  .console .l-error { color:var(--bad); }
+  .console .l-meta { color:var(--warn); font-style:italic; }
+  .console .replay { opacity:.55; }
+  .input-row { display:flex; gap:6px; margin-top:8px; }
+  .input-row input { flex:1; font-family:var(--mono); }
+
+  /* Flash log */
+  .joblog {
+    background:#050a14; color:#cfe1f5; border:1px solid var(--border);
+    border-radius:6px; font-family:var(--mono); font-size:12px;
+    padding:8px 10px; max-height:280px; overflow-y:auto;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .joblog .l-info { color:var(--accent); }
+  .joblog .l-error { color:var(--bad); }
+  .joblog .l-done.ok { color:var(--ok); }
+  .joblog .l-done.fail { color:var(--bad); }
+
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); }
+  .label { color:var(--muted); font-size:11px; text-transform:uppercase;
+    letter-spacing:1px; margin:8px 0 4px; }
+  .stat-dot { width:8px; height:8px; border-radius:50%; display:inline-block;
+    background:var(--muted); }
+  .stat-dot.ok { background:var(--ok); }
+  .stat-dot.warn { background:var(--warn); }
+  .stat-dot.bad { background:var(--bad); }
+  .placeholder { color:var(--muted); font-size:13px; padding:10px;
+    border:1px dashed var(--border); border-radius:6px; text-align:center; }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">🛠️</span>
+    <h1>Saturn Dev</h1>
+  </div>
+  <span class="badge" id="hostBadge">pi5-jenkins</span>
+  <span class="badge muted">development</span>
+  <nav style="display:flex; gap:6px; margin-left:8px;">
+    <a href="/" style="color:#06121f; background:linear-gradient(135deg,var(--accent),#3f7fd6);">Devices &amp; Flash</a>
+    <a href="/tests" style="color:var(--muted); background:rgba(255,255,255,.04); border:1px solid var(--border);">Target Tests</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="clock" id="clock">--:--:--</span>
+  <button class="small" onclick="refreshDevices()">↻ Devices</button>
+  <button class="small" onclick="refreshFirmwares()">↻ Firmware</button>
+</header>
+
+<main>
+  <!-- Left column -->
+  <div class="col">
+    <section class="panel">
+      <h2>Connected Devices
+        <span class="right muted" id="devCount"></span>
+      </h2>
+      <div class="devlist" id="devList">
+        <div class="placeholder">scanning…</div>
+      </div>
+    </section>
+
+    <section class="panel" id="infoPanel" style="display:none;">
+      <h2>Device Info
+        <span class="right">
+          <button class="small" onclick="probeSelected()">Probe</button>
+        </span>
+      </h2>
+      <div class="info" id="infoBody"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Firmware
+        <span class="right muted" id="fwCount"></span>
+      </h2>
+      <div class="fwlist" id="fwList">
+        <div class="placeholder">loading…</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Flash</h2>
+      <div class="row" style="margin-bottom:8px;">
+        <label class="muted">Method:</label>
+        <select id="flashMethod">
+          <option value="dfu">USB DFU (--enter)</option>
+          <option value="swd">SWD (sudo openocd)</option>
+        </select>
+      </div>
+      <div class="row">
+        <button class="primary" id="flashBtn" onclick="flashSelected()" disabled>
+          Flash
+        </button>
+        <span class="muted" id="flashHint">select a device + firmware</span>
+      </div>
+      <div class="label">Output</div>
+      <div class="joblog" id="jobLog"><span class="muted">no flash run yet</span></div>
+    </section>
+
+    <section class="panel">
+      <h2>OTA Update <span class="right muted">(future work)</span></h2>
+      <div class="placeholder">
+        OTA upload over LoRa is not yet wired up.<br>
+        UI placeholder reserved here.
+      </div>
+      <div class="row" style="margin-top:8px;">
+        <button class="small" disabled title="Not implemented">Upload .bin</button>
+        <button class="small" disabled>Trigger OTA</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- Right column: console -->
+  <div class="col">
+    <section class="panel console-wrap">
+      <h2>
+        Console
+        <span class="muted" id="consoleDevLabel" style="font-family:var(--mono); font-weight:600; text-transform:none; letter-spacing:0; margin-left:6px;"></span>
+        <span class="right">
+          <span class="stat-dot" id="consoleDot"></span>
+          <span class="muted" id="consoleStatus">disconnected</span>
+          <button class="small" onclick="clearConsole()">Clear</button>
+          <button class="small" onclick="reopenConsole()">Reopen</button>
+        </span>
+      </h2>
+      <div class="console" id="consoleOut"></div>
+      <div class="input-row">
+        <input type="text" id="consoleInput" placeholder="type command, e.g. 'help', 'get bor', 'send 3 hello' …"
+               onkeydown="onConsoleKey(event)">
+        <button class="primary" onclick="sendConsole()">Send</button>
+      </div>
+      <div class="muted" style="font-size:11px; margin-top:6px;">
+        ↑/↓ history. Cmd appended with CRLF. Common: <code>help</code>, <code>version</code>,
+        <code>get mac_address</code>, <code>get uid</code>, <code>get bor</code>,
+        <code>get ota pending</code>, <code>dfu</code>.
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+//---------------- state ----------------
+const state = {
+  devices: { cdc: [], dfu: [] },
+  firmwares: [],
+  selectedDev: null,      // CDC device path
+  selectedFw: null,       // repo-rel path
+  consoleES: null,
+  jobES: null,
+  history: [],
+  histIdx: -1,
+};
+
+//---------------- helpers --------------
+const $ = id => document.getElementById(id);
+const fmtTime = ts => new Date(ts*1000).toLocaleTimeString();
+const fmtSize = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(2)} MB`;
+const ago = s => {
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${(s/60).toFixed(0)}m ago`;
+  if (s < 86400) return `${(s/3600).toFixed(1)}h ago`;
+  return `${(s/86400).toFixed(1)}d ago`;
+};
+
+function tick() { $('clock').textContent = new Date().toLocaleTimeString(); }
+setInterval(tick, 1000); tick();
+
+//---------------- devices --------------
+async function refreshDevices() {
+  try {
+    const r = await fetch('/api/devices');
+    const j = await r.json();
+    state.devices = j;
+    renderDevices();
+  } catch (e) {
+    $('devList').innerHTML = `<div class="placeholder">error: ${e}</div>`;
+  }
+}
+
+function renderDevices() {
+  const cdc = state.devices.cdc || [];
+  const dfu = state.devices.dfu || [];
+  const stm32cdc = cdc.filter(d => d.is_stm32);
+  const otherCdc = cdc.filter(d => !d.is_stm32);
+
+  const total = stm32cdc.length + dfu.length + otherCdc.length;
+  $('devCount').textContent = `${total} device${total!==1?'s':''}`;
+
+  if (total === 0) {
+    $('devList').innerHTML = '<div class="placeholder">no USB devices found</div>';
+    $('infoPanel').style.display = 'none';
+    return;
+  }
+
+  const items = [];
+  for (const d of stm32cdc) {
+    items.push(devCard(d, 'cdc', 'STM32 CDC'));
+  }
+  for (const d of dfu) {
+    items.push(devCard(d, 'dfu', 'DFU mode'));
+  }
+  for (const d of otherCdc) {
+    items.push(devCard(d, 'other', 'other CDC'));
+  }
+  $('devList').innerHTML = items.join('');
+
+  // Re-render info panel if a CDC device is still selected
+  if (state.selectedDev) {
+    const stillThere = cdc.some(d => d.device === state.selectedDev);
+    if (!stillThere) {
+      state.selectedDev = null;
+      stopConsole();
+      $('infoPanel').style.display = 'none';
+    } else {
+      renderInfoPanel();
+    }
+  }
+  updateFlashBtn();
+}
+
+function devCard(d, kind, label) {
+  const sel = (kind === 'cdc' && d.device === state.selectedDev) ? 'selected' : '';
+  const onclick = (kind === 'cdc')
+    ? `onclick="selectDevice('${d.device}')"`
+    : (kind === 'dfu')
+      ? `onclick="alert('DFU mode device — flash via DFU below.')"`
+      : '';
+  let title, meta;
+  if (kind === 'cdc' || kind === 'other') {
+    title = d.device;
+    const idstr = d.vid && d.pid ? ` ${d.vid}:${d.pid}` : '';
+    meta = `${d.product || ''}${idstr}${d.location ? ' loc='+d.location : ''}${d.serial_number ? ' sn='+d.serial_number : ''}`;
+  } else {
+    title = `bus${d.bus}/dev${d.device}`;
+    meta = `${d.vid}:${d.pid} ${d.desc || ''}`;
+  }
+  return `<div class="dev ${sel}" ${onclick}>
+    <div class="row1">
+      <span class="name">${title}</span>
+      <span class="pill ${kind}">${label}</span>
+    </div>
+    <div class="meta">${meta}</div>
+  </div>`;
+}
+
+function selectDevice(devPath) {
+  state.selectedDev = devPath;
+  renderDevices();
+  $('infoPanel').style.display = '';
+  renderInfoPanel();
+  startConsole(devPath);
+  updateFlashBtn();
+}
+
+function renderInfoPanel() {
+  const d = (state.devices.cdc || []).find(x => x.device === state.selectedDev);
+  if (!d) { $('infoPanel').style.display = 'none'; return; }
+  const rows = [
+    ['Port', d.device],
+    ['VID:PID', `${d.vid}:${d.pid}`],
+    ['Product', d.product || '—'],
+    ['Manufacturer', d.manufacturer || '—'],
+    ['Serial', d.serial_number || '—'],
+    ['USB path', d.location || '—'],
+    ['HWID', d.hwid || '—'],
+  ];
+  $('infoBody').innerHTML = rows.map(([k,v]) =>
+    `<div class="k">${k}</div><div class="v">${v}</div>`
+  ).join('');
+}
+
+//---------------- firmware -------------
+async function refreshFirmwares() {
+  try {
+    const r = await fetch('/api/firmwares');
+    const j = await r.json();
+    state.firmwares = j.firmwares || [];
+    renderFirmwares();
+  } catch (e) {
+    $('fwList').innerHTML = `<div class="placeholder">error: ${e}</div>`;
+  }
+}
+
+function renderFirmwares() {
+  const fw = state.firmwares;
+  $('fwCount').textContent = `${fw.length} bin${fw.length!==1?'s':''}`;
+  if (!fw.length) {
+    $('fwList').innerHTML = '<div class="placeholder">no .bin files found — build first</div>';
+    return;
+  }
+  const now = Date.now()/1000|0;
+  $('fwList').innerHTML = fw.map(f => {
+    const sel = f.path === state.selectedFw ? 'selected' : '';
+    return `<div class="fw ${sel}" onclick="selectFw('${f.path}')">
+      <div class="name">${f.app} <span class="muted">(${f.path.split('/').slice(-1)[0]})</span></div>
+      <div class="meta">${f.path} · ${fmtSize(f.size)} · ${ago(now - f.mtime)}</div>
+    </div>`;
+  }).join('');
+}
+
+function selectFw(path) {
+  state.selectedFw = path;
+  renderFirmwares();
+  updateFlashBtn();
+}
+
+function updateFlashBtn() {
+  const ready = !!state.selectedFw &&
+    (!!state.selectedDev || (state.devices.dfu && state.devices.dfu.length > 0)
+     || $('flashMethod').value === 'swd');
+  $('flashBtn').disabled = !ready;
+  if (!state.selectedFw) {
+    $('flashHint').textContent = 'select firmware';
+  } else if ($('flashMethod').value === 'dfu' && !state.selectedDev
+             && !(state.devices.dfu && state.devices.dfu.length)) {
+    $('flashHint').textContent = 'select a CDC device or put board in DFU first';
+  } else {
+    $('flashHint').textContent = `→ ${state.selectedFw} (${$('flashMethod').value})`;
+  }
+}
+document.addEventListener('change', e => {
+  if (e.target.id === 'flashMethod') updateFlashBtn();
+});
+
+//---------------- console (SSE) --------
+function appendConsole(cls, text, replay=false) {
+  const el = $('consoleOut');
+  const wasNearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  const span = document.createElement('span');
+  span.className = `l-${cls} ${replay ? 'replay' : ''}`;
+  if (cls === 'tx') span.textContent = `> ${text}\n`;
+  else span.textContent = `${text}\n`;
+  el.appendChild(span);
+  // cap node count
+  while (el.childNodes.length > 4000) el.removeChild(el.firstChild);
+  if (wasNearBottom) el.scrollTop = el.scrollHeight;
+}
+
+function clearConsole() { $('consoleOut').innerHTML = ''; }
+
+function setConsoleStatus(state, label) {
+  $('consoleDot').className = `stat-dot ${state}`;
+  $('consoleStatus').textContent = label;
+}
+
+function startConsole(devPath) {
+  stopConsole();
+  $('consoleDevLabel').textContent = devPath;
+  setConsoleStatus('warn', 'connecting');
+  clearConsole();
+  const url = `/api/console/stream?device=${encodeURIComponent(devPath)}`;
+  const es = new EventSource(url);
+  state.consoleES = es;
+  es.onopen = () => setConsoleStatus('ok', 'connected');
+  es.onerror = () => setConsoleStatus('bad', 'disconnected');
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello') appendConsole('meta', `[opened ${m.device}]`);
+    else if (m.type === 'rx') appendConsole('rx', m.text, m.replay);
+    else if (m.type === 'tx') appendConsole('tx', m.text);
+    else if (m.type === 'closed') { appendConsole('meta', `[port closed]`); setConsoleStatus('bad','closed'); }
+    else if (m.type === 'error') appendConsole('error', m.text);
+  };
+}
+
+function stopConsole() {
+  if (state.consoleES) { state.consoleES.close(); state.consoleES = null; }
+  setConsoleStatus('', 'disconnected');
+}
+
+async function reopenConsole() {
+  if (!state.selectedDev) return;
+  await fetch('/api/console/close', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({device: state.selectedDev})});
+  startConsole(state.selectedDev);
+}
+
+async function sendConsole() {
+  const inp = $('consoleInput');
+  const text = inp.value;
+  if (!text || !state.selectedDev) return;
+  await fetch('/api/console/send', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({device: state.selectedDev, text})});
+  state.history.push(text);
+  state.histIdx = state.history.length;
+  inp.value = '';
+}
+
+function onConsoleKey(e) {
+  if (e.key === 'Enter') { sendConsole(); }
+  else if (e.key === 'ArrowUp') {
+    if (state.histIdx > 0) { state.histIdx--; e.target.value = state.history[state.histIdx]; }
+    e.preventDefault();
+  } else if (e.key === 'ArrowDown') {
+    if (state.histIdx < state.history.length - 1) {
+      state.histIdx++; e.target.value = state.history[state.histIdx];
+    } else {
+      state.histIdx = state.history.length; e.target.value = '';
+    }
+    e.preventDefault();
+  }
+}
+
+async function probeSelected() {
+  if (!state.selectedDev) return;
+  await fetch('/api/probe', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({device: state.selectedDev})});
+}
+
+//---------------- flash ---------------
+async function flashSelected() {
+  if (!state.selectedFw) return;
+  const method = $('flashMethod').value;
+  const device = state.selectedDev || '';
+  $('jobLog').innerHTML = '';
+  $('flashBtn').disabled = true;
+  setConsoleStatus('warn', 'paused for flash');
+  try {
+    const r = await fetch('/api/flash', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({method, firmware: state.selectedFw, device})});
+    const j = await r.json();
+    if (!r.ok || !j.job) throw new Error(j.error || 'flash failed to start');
+    streamJob(j.job, () => {
+      // After flash completes, re-enumerate devices and try to reopen console
+      setTimeout(() => {
+        refreshDevices().then(() => {
+          if (state.selectedDev) startConsole(state.selectedDev);
+        });
+      }, 1500);
+    });
+  } catch (e) {
+    appendJob('error', `error: ${e.message}`);
+    $('flashBtn').disabled = false;
+  }
+}
+
+function appendJob(cls, text) {
+  const el = $('jobLog');
+  const span = document.createElement('span');
+  span.className = `l-${cls}`;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+function streamJob(jid, onDone) {
+  if (state.jobES) state.jobES.close();
+  const es = new EventSource(`/api/job/stream?id=${jid}`);
+  state.jobES = es;
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello') appendJob('info', `[${m.label}]`);
+    else if (m.type === 'info') appendJob('info', m.text);
+    else if (m.type === 'log') appendJob('log', m.text);
+    else if (m.type === 'error') appendJob('error', m.text);
+    else if (m.type === 'done') {
+      const cls = m.code === 0 ? 'done ok' : 'done fail';
+      appendJob(cls, `[exit ${m.code}]`);
+      es.close(); state.jobES = null;
+      $('flashBtn').disabled = false;
+      if (onDone) onDone();
+    }
+  };
+  es.onerror = () => { /* will reconnect or end */ };
+}
+
+//---------------- boot -----------------
+refreshDevices();
+refreshFirmwares();
+setInterval(refreshDevices, 4000);
+</script>
+</body>
+</html>

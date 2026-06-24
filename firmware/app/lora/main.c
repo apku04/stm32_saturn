@@ -27,6 +27,11 @@
 #include "sht3x.h"
 #include "ext_flash.h"
 #include "event_log.h"
+#include "flash_config.h"
+#include "ota_apply.h"
+#include "flash_ota.h"
+#include "crc32.h"
+#include "version.h"
 
 /* ---- Globals ---- */
 static uint16_t seq = 0;
@@ -46,8 +51,38 @@ typedef struct {
     uint32_t last_init_stage;   /* highest stage reached on PREVIOUS boot */
     uint32_t init_stage;        /* live stage counter for THIS boot */
     uint32_t last_uptime_ms;    /* uptime saved each beacon — survives reset */
+    uint32_t main_chk;          /* live main-loop checkpoint: which call is in
+                                 * progress. Survives IWDG reset so the next
+                                 * boot can report exactly where the loop hung. */
 } diag_t;
 __attribute__((section(".noinit"))) static diag_t diag;
+
+/* Main-loop checkpoint codes stored in diag.main_chk. On an IWDG reset the
+ * value left here is the call that was executing when the watchdog bit. */
+enum {
+    MAINCHK_TOP       = 1,   /* top of loop, before usb poll */
+    MAINCHK_USB       = 2,   /* usb_cdc_poll */
+    MAINCHK_TIMER     = 3,   /* timer_poll (runs beaconHandler) */
+    MAINCHK_GPS       = 4,   /* gps_poll */
+    MAINCHK_RADIO_IRQ = 5,   /* radio_irq_handler (SX1262 BUSY wait lives here) */
+    MAINCHK_APP_IN    = 6,   /* dcf_app_interface INCOMING */
+    MAINCHK_APP_OUT   = 7,   /* dcf_app_interface OUTGOING */
+    MAINCHK_NET_IN    = 8,   /* network_interface INCOMING */
+    MAINCHK_NET_OUT   = 9,   /* network_interface OUTGOING */
+    MAINCHK_MAC_IN    = 10,  /* mac_interface INCOMING */
+    MAINCHK_MAC_OUT   = 11,  /* mac_interface OUTGOING */
+    MAINCHK_MAC_RETX  = 12,  /* mac_interface RETX */
+};
+
+
+/* ---- OTA state (declared here so beaconHandler and main loop can see it) ---- */
+typedef enum {
+    OTA_STATE_IDLE = 0,
+    OTA_STATE_READY,      /* PREPARE accepted; erased; waiting for first DATA  */
+    OTA_STATE_RECEIVING,  /* DATA packets arriving                              */
+} ota_state_t;
+static ota_state_t ota_state  = OTA_STATE_IDLE;
+static uint32_t    ota_idle_dl = 0;
 
 /* ---- Forward declarations ---- */
 static void clock_init(void);
@@ -60,6 +95,7 @@ static void dcf_app_interface(Direction dir, PacketBuffer *rx, PacketBuffer *tx)
 static void app_outgoing(Packet *pkt, PacketBuffer *txbuf);
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf);
 static void usb_rx_handler(uint8_t *data, uint16_t len);
+static void persist_beacon_interval_s(uint8_t seconds);
 
 /* ---- LED helpers (PB13 = LED1, PB14 = LED2, active high) ---- */
 void led1_toggle(void) { GPIO_ODR(GPIOB_BASE) ^= (1 << LED1_PIN); }
@@ -118,12 +154,34 @@ static void wdt_kick(void) {
 
 /* ---- USB receive callback → terminal ---- */
 static void usb_rx_handler(uint8_t *data, uint16_t len) {
-    if (len > 0 && len < 255)
-        terminal(data, (uint8_t)len);
+    /* The USB-CDC OUT endpoint is 64 bytes, so a command longer than one packet
+     * (e.g. `send ota data <t> <off> <80 hex>` ≈ 100 chars) arrives in several
+     * callbacks. Accumulate bytes here until a line terminator, then dispatch
+     * the whole line — otherwise long commands are split and mis-parsed. */
+    static uint8_t line[128];   /* matches terminal()'s MAX_ARGV input limit */
+    static uint16_t pos = 0;
+    for (uint16_t i = 0; i < len; i++) {
+        uint8_t c = data[i];
+        if (c == '\n' || c == '\r') {
+            if (pos > 0) {
+                terminal(line, (uint8_t)pos);
+                pos = 0;
+            }
+        } else if (pos < sizeof(line) - 1) {
+            line[pos++] = c;
+        } else {
+            pos = 0;   /* oversized line — drop it */
+        }
+    }
+}
+
+static void persist_beacon_interval_s(uint8_t seconds) {
+    writeFlashParamByte(PARAMETER_N, seconds);
 }
 
 /* ---- Beacon handler (called every 10s by timer) ---- */
 static void beaconHandler(void) {
+    if (ota_state != OTA_STATE_IDLE) return;   /* suspend beacons during OTA */
     if (GLOB_ERROR_BUFFER_FULL != buffer_full(&pTxBuf)) {
         if (get_beacon_flag()) {
             Packet pkt;
@@ -260,7 +318,196 @@ static void app_outgoing(Packet *pkt, PacketBuffer *txbuf) {
     }
 }
 
+/* ---- OTA-over-LoRa receive (this node as target) + ACK observation (gw) ----
+ *
+ * OTA control packets ride the same single-hop broadcast path as CMD_CFG. Each
+ * carries a target node id so only the intended node acts; everyone else drops
+ * it. Wire format (payload at data[off], off = mesh_tbl_entries*3 = 0 for these
+ * un-shifted control packets):
+ *   OTA_BEGIN: target(1) size_lo size_hi
+ *   OTA_DATA : target(1) off_lo off_hi len(1) bytes[len]   (off,len multiples of 8)
+ *   OTA_END  : target(1) size_lo size_hi crc32[4]          (crc32 = zlib over image)
+ *   OTA_ACK  : op(1) status(1) off_lo off_hi               (target -> sender)
+ */
+#define OTA_OP_PREPARE 0   /* handshake: version check + erase + enter RX mode */
+#define OTA_OP_BEGIN   1   /* kept for backward compat                         */
+#define OTA_OP_DATA    2
+#define OTA_OP_END     3
+
+/* PREPARE NACK reason codes (returned in ACK status byte) */
+#define OTA_PREPARE_OK           0
+#define OTA_PREPARE_SAME_VER     1   /* already running this build */
+#define OTA_PREPARE_TOO_LARGE    2   /* image won't fit OTA bank   */
+#define OTA_PREPARE_BUSY         3   /* already in OTA mode        */
+#define OTA_PREPARE_ERASE_FAIL   4   /* flash erase failed         */
+
+/* How long to stay in OTA mode with no incoming DATA before giving up */
+#define OTA_IDLE_TIMEOUT_MS  30000u
+
+static uint16_t ota_rx_size   = 0;   /* expected image size                 */
+static uint32_t ota_reboot_at = 0;   /* get_tick_ms() deadline to reset; 0=off */
+
+static void ota_send_ack(PacketBuffer *txbuf, uint8_t op, uint8_t status, uint16_t off) {
+    Packet ack;
+    memset(&ack, 0, sizeof(Packet));
+    ack.pOwner = NET;
+    ack.pktDir = OUTGOING;
+    ack.control_app = OTA_ACK;
+    ack.data[0] = op;
+    ack.data[1] = status;
+    ack.data[2] = (uint8_t)(off & 0xFF);
+    ack.data[3] = (uint8_t)(off >> 8);
+    ack.length  = APP_HEADER_SIZE + 4;
+    /* Queued only; the main loop's network/mac OUTGOING steps transmit it this
+     * same iteration. END defers its reboot so this ACK leaves first. */
+    if (buffer_full(txbuf) != GLOB_ERROR_BUFFER_FULL)
+        write_packet(txbuf, &ack);
+}
+
+/* Returns true if pkt was an OTA control packet (handled — caller returns). */
+static bool ota_rx_dispatch(Packet *pkt, PacketBuffer *txbuf) {
+    uint8_t off = pkt->mesh_tbl_entries * 3;
+    uint8_t data_len = (pkt->length > PACKET_HEADER_SIZE)
+                       ? (uint8_t)(pkt->length - PACKET_HEADER_SIZE) : 0;
+    uint8_t *p = &pkt->data[off];
+
+    switch (pkt->control_app) {
+    case OTA_PREPARE: {
+        /* Handshake: TX announces version+size; RX checks, erases, enters OTA mode.
+         * Payload: target(1) ver[16] size_lo size_hi crc[4]  = 23 bytes total */
+        if (data_len < off + 23 || p[0] != get_mac_address()) return true;
+
+        if (ota_state != OTA_STATE_IDLE) {
+            ota_send_ack(txbuf, OTA_OP_PREPARE, OTA_PREPARE_BUSY, 0);
+            return true;
+        }
+
+        /* Version check: reject if TX is pushing the build we're already running */
+        char inc_ver[17];
+        memcpy(inc_ver, &p[1], 16);
+        inc_ver[16] = '\0';
+        if (strncmp(inc_ver, fw_build_id_string(), 16) == 0) {
+            print("[OTA] PREPARE: already on this version\n");
+            ota_send_ack(txbuf, OTA_OP_PREPARE, OTA_PREPARE_SAME_VER, 0);
+            return true;
+        }
+
+        uint16_t size = (uint16_t)p[17] | ((uint16_t)p[18] << 8);
+        if (size == 0 || (uint32_t)size > ota_bank_size()) {
+            ota_send_ack(txbuf, OTA_OP_PREPARE, OTA_PREPARE_TOO_LARGE, 0);
+            return true;
+        }
+
+        if (ota_erase() != OTA_OK) {
+            ota_send_ack(txbuf, OTA_OP_PREPARE, OTA_PREPARE_ERASE_FAIL, 0);
+            return true;
+        }
+
+        ota_rx_size  = size;
+        ota_state    = OTA_STATE_READY;
+        ota_idle_dl  = get_tick_ms() + OTA_IDLE_TIMEOUT_MS;
+
+        char b[72];
+        snprintf(b, sizeof(b), "[OTA] PREPARE ok: ver=%s size=%u -> OTA mode\n",
+                 inc_ver, size);
+        print(b);
+        ota_send_ack(txbuf, OTA_OP_PREPARE, OTA_PREPARE_OK, 0);
+        return true;
+    }
+    case OTA_BEGIN: {
+        /* Legacy path kept for backward compat — also transitions to READY state */
+        if (data_len < off + 3 || p[0] != get_mac_address()) return true;
+        if (ota_state != OTA_STATE_IDLE) {
+            ota_send_ack(txbuf, OTA_OP_BEGIN, OTA_PREPARE_BUSY, 0);
+            return true;
+        }
+        uint16_t size = (uint16_t)p[1] | ((uint16_t)p[2] << 8);
+        uint8_t status = 1;
+        if (size > 0 && (uint32_t)size <= ota_bank_size() && ota_erase() == OTA_OK) {
+            ota_rx_size = size;
+            ota_state   = OTA_STATE_READY;
+            ota_idle_dl = get_tick_ms() + OTA_IDLE_TIMEOUT_MS;
+            status = 0;
+        }
+        char b[48];
+        snprintf(b, sizeof(b), "[OTA] begin size=%u %s\n", size, status ? "FAIL" : "ok");
+        print(b);
+        ota_send_ack(txbuf, OTA_OP_BEGIN, status, 0);
+        return true;
+    }
+    case OTA_DATA: {
+        if (data_len < off + 4 || p[0] != get_mac_address()) return true;
+        uint16_t foff = (uint16_t)p[1] | ((uint16_t)p[2] << 8);
+        uint8_t  flen = p[3];
+
+        /* Reject DATA if we never agreed to an OTA session */
+        if (ota_state == OTA_STATE_IDLE) {
+            ota_send_ack(txbuf, OTA_OP_DATA, 0xFF, foff);
+            return true;
+        }
+
+        /* Each DATA packet resets the idle timeout */
+        ota_idle_dl  = get_tick_ms() + OTA_IDLE_TIMEOUT_MS;
+        ota_state    = OTA_STATE_RECEIVING;
+
+        uint8_t  status = 1;
+        uint32_t limit  = (ota_rx_size + 7u) & ~7u;
+        if (ota_rx_size > 0 && flen > 0 && (uint32_t)(foff + flen) <= limit &&
+            (uint8_t)(data_len - off - 4) >= flen &&
+            ota_write(foff, &p[4], flen) == OTA_OK) {
+            status = 0;
+        }
+        ota_send_ack(txbuf, OTA_OP_DATA, status, foff);
+        return true;
+    }
+    case OTA_END: {
+        if (data_len < off + 7 || p[0] != get_mac_address()) return true;
+
+        /* Reject END if not in an active OTA session */
+        if (ota_state == OTA_STATE_IDLE) return true;
+
+        uint16_t size = (uint16_t)p[1] | ((uint16_t)p[2] << 8);
+        uint32_t want = (uint32_t)p[3] | ((uint32_t)p[4] << 8) |
+                        ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 24);
+        uint8_t status = 2;   /* default: CRC/size mismatch */
+        if (size > 0 && size == ota_rx_size &&
+            crc32_compute((const uint8_t *)ota_bank_addr(), size) == want) {
+            ota_set_pending(size);
+            ota_rx_size = 0;
+            ota_state   = OTA_STATE_IDLE;
+            status = 0;
+            ota_reboot_at = get_tick_ms() + 800;   /* let the ACK transmit first */
+            print("[OTA] end OK -> rebooting to apply\n");
+        } else {
+            /* CRC fail: stay in state so TX can retry end or abort */
+            print("[OTA] end CRC FAIL\n");
+        }
+        ota_send_ack(txbuf, OTA_OP_END, status, 0);
+        return true;
+    }
+    case OTA_ACK: {
+        /* Observed on the gateway — surfaced for the host-side OTA driver. */
+        if (data_len >= off + 4) {
+            uint16_t aoff = (uint16_t)p[2] | ((uint16_t)p[3] << 8);
+            char b[64];
+            snprintf(b, sizeof(b), "[OTA_ACK] from=%u op=%u status=%u off=%u\n",
+                     pkt->source_adr, p[0], p[1], aoff);
+            print(b);
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
+    /* OTA control traffic is high-volume (≈1000 fragments per image): handle it
+     * before the verbose per-packet prints below so it neither spams the console
+     * nor is slowed by USB-CDC output. */
+    if (ota_rx_dispatch(pkt, txbuf))
+        return;
+
     /* Print received packet info.
      * Buffer must fit the longest [BEACON] decode line (v7 with all fields
      * populated is ~170 chars including the trailing newline). 160 was too
@@ -276,6 +523,24 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
 
     /* Decode beacon telemetry */
     if (pkt->control_app == BEACON) {
+        /* Print the piggybacked routing table this neighbour advertises so the
+         * host can show each remote node's table (entries live at data[0..],
+         * 3 bytes each: dest, next_hop, hop_count). */
+        if (pkt->mesh_tbl_entries > 0) {
+            char tb[224];
+            int off = snprintf(tb, sizeof(tb), "[BTBL] src=%u n=%u",
+                               pkt->source_adr, pkt->mesh_tbl_entries);
+            for (uint8_t i = 0; i < pkt->mesh_tbl_entries; i++) {
+                if (off >= (int)sizeof(tb) - 16)
+                    break;
+                off += snprintf(tb + off, sizeof(tb) - off, " %u>%u:%u",
+                                pkt->data[i * 3], pkt->data[i * 3 + 1],
+                                pkt->data[i * 3 + 2]);
+            }
+            snprintf(tb + off, sizeof(tb) - off, "\n");
+            print(tb);
+        }
+
         uint8_t data_len = 0;
         if (pkt->length > PACKET_HEADER_SIZE)
             data_len = pkt->length - PACKET_HEADER_SIZE;
@@ -420,8 +685,7 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
 
     /* Handle CMD_CFG on the field device: send CMD_ACK first, THEN apply
      * the new setting (so the ACK still goes out at the old power/SF and
-     * is heard by the base). RAM-only — flash is not touched, so a reset
-     * reverts to the configured defaults. */
+     * is heard by the base). Beacon interval can optionally be persisted. */
     if (pkt->control_app == CMD_CFG) {
         uint8_t data_len = 0;
         if (pkt->length > PACKET_HEADER_SIZE)
@@ -430,6 +694,8 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
         uint8_t off = tbl_bytes;
 
         uint8_t op = 0, new_pwr = radio_get_tx_power(), new_sf = radio_get_datarate();
+        uint8_t target = BROADCAST, persist = 0;
+        uint16_t new_beacon_s = timer_get_beacon_interval_s();
         uint8_t status = 1;  /* 0=ok, 1=invalid */
 
         if (data_len >= off + 2) {
@@ -446,30 +712,71 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
                 if (p >= 1 && p <= 22 && s >= 5 && s <= 12) {
                     new_pwr = p; new_sf = s; status = 0;
                 }
+            } else if (op == 0x10 && data_len >= off + 5) {
+                target = pkt->data[off + 1];
+                persist = pkt->data[off + 2];
+                new_beacon_s = (uint16_t)pkt->data[off + 3] |
+                               ((uint16_t)pkt->data[off + 4] << 8);
+                if ((target == BROADCAST || target == get_mac_address()) &&
+                    persist <= 1u && new_beacon_s >= 1u && new_beacon_s <= 255u) {
+                    status = 0;
+                }
             }
         }
 
-        /* Build CMD_ACK reply */
-        Packet ack;
-        memset(&ack, 0, sizeof(Packet));
-        ack.pOwner = NET;
-        ack.pktDir = OUTGOING;
-        ack.control_app = CMD_ACK;
-        ack.data[0] = op;
-        ack.data[1] = status;
-        ack.data[2] = new_pwr;
-        ack.data[3] = new_sf;
-        ack.length = 4 + 4;
-        if (buffer_full(txbuf) != GLOB_ERROR_BUFFER_FULL)
-            write_packet(txbuf, &ack);
+        if (op == 0x10 && target != BROADCAST && target != get_mac_address())
+            return;
 
-        /* Apply AFTER queueing the ACK (RAM-only). */
+        /* Build CMD_ACK reply. Radio power/SF ACK before applying, because
+         * changing those can make the ACK unreachable. Beacon interval does
+         * not affect the radio link, and persistent flash writes block before
+         * the queued packet can be serviced, so beacon ACK is sent after apply. */
+        if (op != 0x10) {
+            Packet ack;
+            memset(&ack, 0, sizeof(Packet));
+            ack.pOwner = NET;
+            ack.pktDir = OUTGOING;
+            ack.control_app = CMD_ACK;
+            ack.data[0] = op;
+            ack.data[1] = status;
+            ack.data[2] = new_pwr;
+            ack.data[3] = new_sf;
+            ack.length = 4 + 4;
+            if (buffer_full(txbuf) != GLOB_ERROR_BUFFER_FULL)
+                write_packet(txbuf, &ack);
+        }
+
         if (status == 0) {
             if (op == 0x01 || op == 0x03) radio_set_tx_power(new_pwr);
             if (op == 0x02 || op == 0x03) radio_set_datarate(new_sf);
+            if (op == 0x10) {
+                timer_set_beacon_interval_s(new_beacon_s);
+            }
             print("[CFG] applied\n");
         } else {
             print("[CFG] rejected (invalid value)\n");
+        }
+
+        if (op == 0x10) {
+            Packet ack;
+            memset(&ack, 0, sizeof(Packet));
+            ack.pOwner = NET;
+            ack.pktDir = OUTGOING;
+            ack.control_app = CMD_ACK;
+            ack.data[0] = op;
+            ack.data[1] = status;
+            ack.data[2] = target;
+            ack.data[3] = persist;
+            ack.data[4] = (uint8_t)(new_beacon_s & 0xFF);
+            ack.data[5] = (uint8_t)(new_beacon_s >> 8);
+            ack.length = 4 + 6;
+            if (buffer_full(txbuf) != GLOB_ERROR_BUFFER_FULL) {
+                write_packet(txbuf, &ack);
+                network_interface(OUTGOING);
+                mac_interface(OUTGOING);
+            }
+            if (status == 0 && persist)
+                persist_beacon_interval_s((uint8_t)new_beacon_s);
         }
     }
 
@@ -480,14 +787,25 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             data_len = pkt->length - PACKET_HEADER_SIZE;
         uint8_t tbl_bytes = pkt->mesh_tbl_entries * 3;
         uint8_t off = tbl_bytes;
-        if (data_len >= off + 4) {
-            char cbuf[96];
-            snprintf(cbuf, sizeof(cbuf),
-                     "[CMD_ACK] from=%u op=%u status=%u tx_pwr=%u sf=%u\n",
-                     pkt->source_adr,
-                     pkt->data[off], pkt->data[off+1],
-                     pkt->data[off+2], pkt->data[off+3]);
-            print(cbuf);
+        if (data_len >= off + 2) {
+            char cbuf[128];
+            uint8_t op = pkt->data[off];
+            if (op == 0x10 && data_len >= off + 6) {
+                uint16_t sec = (uint16_t)pkt->data[off+4] |
+                               ((uint16_t)pkt->data[off+5] << 8);
+                snprintf(cbuf, sizeof(cbuf),
+                         "[CMD_ACK] from=%u op=%u status=%u target=%u persist=%u beacon_interval=%u\n",
+                         pkt->source_adr, op, pkt->data[off+1],
+                         pkt->data[off+2], pkt->data[off+3], sec);
+                print(cbuf);
+            } else if (data_len >= off + 4) {
+                snprintf(cbuf, sizeof(cbuf),
+                         "[CMD_ACK] from=%u op=%u status=%u tx_pwr=%u sf=%u\n",
+                         pkt->source_adr,
+                         pkt->data[off], pkt->data[off+1],
+                         pkt->data[off+2], pkt->data[off+3]);
+                print(cbuf);
+            }
         }
     }
 }
@@ -523,18 +841,47 @@ void Reset_Handler(void) {
     dst = &_sbss;
     while (dst < &_ebss) *dst++ = 0;
 
+    /* Copy .ramfunc into RAM (the OTA applier executes from here while it
+     * erases/reprograms the application flash). Must run before any call into
+     * ota_apply_at_boot(). */
+    extern uint32_t _siramfunc, _sramfunc, _eramfunc;
+    src = &_siramfunc; dst = &_sramfunc;
+    while (dst < &_eramfunc) *dst++ = *src++;
+
+    /* Apply a staged OTA image, if one is pending, before the watchdog starts.
+     * On success this resets the MCU and never returns; otherwise it falls
+     * through and the current application continues to boot.
+     *
+     * GATED OFF by default until the in-place applier is validated end-to-end
+     * with fixed-on-fixed firmware (the flash-program fix is in place and the
+     * scratch-page self-test passes — see `get ota selftest`). Build with
+     * -DOTA_APPLY_ENABLED to enable. The OTA transfer + staging + pending flag
+     * are fully functional regardless; only the auto-apply step is gated. */
+#ifdef OTA_APPLY_ENABLED
+    ota_apply_at_boot();
+#else
+    (void)ota_apply_at_boot;
+#endif
+
     /* Update .noinit diagnostic state */
+    uint8_t hung_chk = 0;   /* main-loop checkpoint from the boot that just died */
     if (diag.magic == DIAG_MAGIC) {
         diag.boot_count++;
         diag.last_init_stage = diag.init_stage;   /* how far we got last time */
+        /* If the previous boot reached the main loop, main_chk holds the call
+         * that was running when it hung (IWDG) or was interrupted (BOR/PIN). */
+        if (diag.last_init_stage == 0xFFu)
+            hung_chk = (uint8_t)diag.main_chk;
     } else {
         diag.magic = DIAG_MAGIC;
         diag.boot_count = 1;
         diag.last_init_stage = 0;
         diag.last_uptime_ms = 0;
+        diag.main_chk = 0;
     }
     diag.last_reset_csr = csr_snapshot;
     diag.init_stage = 1;   /* entered Reset_Handler */
+    diag.main_chk = 0;     /* not in main loop yet */
 
     /* Init hardware */
     clock_init();
@@ -544,7 +891,14 @@ void Reset_Handler(void) {
     diag.init_stage = 2;
     led1_on();
 
-    timer_init();      diag.init_stage = 3;
+    timer_init();
+    {
+        uint8_t bint = 0xFF;
+        readFlash(PARAMETER_N, &bint);
+        if (bint >= 1u && bint <= 255u)
+            timer_set_beacon_interval_s(bint);
+    }
+    diag.init_stage = 3;
     spi_init();        diag.init_stage = 4;
     adc_init();        diag.init_stage = 5;
     ina219_init();     diag.init_stage = 6;
@@ -564,7 +918,8 @@ void Reset_Handler(void) {
                      diag.last_uptime_ms,
                      (uint8_t)diag.last_init_stage,
                      (uint8_t)diag.init_stage,
-                     diag.last_init_stage == 0xFFu);
+                     diag.last_init_stage == 0xFFu,
+                     hung_chk);
     wdt_kick();
     gps_init();        diag.init_stage = 10;
     usb_cdc_init();    diag.init_stage = 11;
@@ -608,21 +963,37 @@ void Reset_Handler(void) {
     /* Main loop — fully polled, same structure as PIC24 */
     diag.init_stage = 0xFF;   /* reached main loop successfully */
     while (1) {
+        diag.main_chk = MAINCHK_TOP;
         wdt_kick();
-        usb_cdc_poll();
-        timer_poll();
-        gps_poll();
+
+        /* OTA: reboot once the END-ACK has had time to transmit. The pending
+         * image is applied early in Reset_Handler (see ota_apply_at_boot). */
+        if (ota_reboot_at && get_tick_ms() >= ota_reboot_at) {
+            SCB_AIRCR = 0x05FA0004u;   /* VECTKEY | SYSRESETREQ */
+            while (1);
+        }
+
+        /* OTA idle timeout: if TX went silent after PREPARE/BEGIN, exit OTA mode */
+        if (ota_state != OTA_STATE_IDLE && get_tick_ms() >= ota_idle_dl) {
+            ota_state   = OTA_STATE_IDLE;
+            ota_rx_size = 0;
+            print("[OTA] idle timeout — resuming normal operation\n");
+        }
+
+        diag.main_chk = MAINCHK_USB;   usb_cdc_poll();
+        diag.main_chk = MAINCHK_TIMER; timer_poll();
+        diag.main_chk = MAINCHK_GPS;   gps_poll();
 
         if (radio_ok) {
-            radio_irq_handler();
+            diag.main_chk = MAINCHK_RADIO_IRQ; radio_irq_handler();
 
-            dcf_app_interface(INCOMING, &pRxBuf, &pTxBuf);
-            dcf_app_interface(OUTGOING, &pRxBuf, &pTxBuf);
-            network_interface(INCOMING);
-            network_interface(OUTGOING);
-            mac_interface(INCOMING);
-            mac_interface(OUTGOING);
-            mac_interface(RETX);
+            diag.main_chk = MAINCHK_APP_IN;   dcf_app_interface(INCOMING, &pRxBuf, &pTxBuf);
+            diag.main_chk = MAINCHK_APP_OUT;  dcf_app_interface(OUTGOING, &pRxBuf, &pTxBuf);
+            diag.main_chk = MAINCHK_NET_IN;   network_interface(INCOMING);
+            diag.main_chk = MAINCHK_NET_OUT;  network_interface(OUTGOING);
+            diag.main_chk = MAINCHK_MAC_IN;   mac_interface(INCOMING);
+            diag.main_chk = MAINCHK_MAC_OUT;  mac_interface(OUTGOING);
+            diag.main_chk = MAINCHK_MAC_RETX; mac_interface(RETX);
         }
     }
 }

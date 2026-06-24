@@ -67,7 +67,8 @@ void event_log_append(uint32_t boot_count,
                       uint32_t last_uptime_ms,
                       uint8_t  last_init_stage,
                       uint8_t  this_init_stage,
-                      uint8_t  reached_main)
+                      uint8_t  reached_main,
+                      uint8_t  last_main_chk)
 {
     if (!ext_flash_present())
         return;
@@ -90,6 +91,7 @@ void event_log_append(uint32_t boot_count,
     rec.last_uptime_ms  = last_uptime_ms;
     rec.last_init_stage = last_init_stage;
     rec.this_init_stage = this_init_stage;
+    rec.last_main_chk   = last_main_chk;
 
     ext_flash_write(LOG_SECTOR_ADDR + s_head * EVENT_LOG_REC_SIZE,
                     (const uint8_t *)&rec, sizeof(rec));

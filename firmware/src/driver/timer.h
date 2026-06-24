@@ -14,6 +14,8 @@ void     timer_poll(void);
 void     delay_ms(uint32_t t);
 uint32_t get_tick_ms(void);
 void     register_timer_cb(cb_timer cb);
+uint16_t timer_get_beacon_interval_s(void);
+uint8_t  timer_set_beacon_interval_s(uint16_t seconds);
 
 /* Timer variables used by MAC layer */
 extern volatile uint32_t difsTimer;

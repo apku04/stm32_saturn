@@ -9,68 +9,196 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   :root {
-    --bg:#0f172a; --panel:#1e293b; --border:#334155;
-    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8;
-    --good:#10b981; --warn:#f59e0b; --bad:#ef4444;
+    --bg:#f4f5f7; --bg-elev:#ffffff; --panel:#ffffff; --panel-2:#fafbfc;
+    --border:#e4e7ec; --border-soft:#eef0f3;
+    --text:#1c2330; --muted:#697586; --accent:#5856d6; --accent-2:#0a84ff;
+    --good:#34c759; --warn:#ff9500; --bad:#ff3b30;
+    --radius:11px; --radius-sm:8px;
+    --shadow:0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.08);
+    --shadow-lg:0 6px 16px -6px rgba(16,24,40,.12), 0 14px 30px -12px rgba(16,24,40,.16);
+    --ring:0 0 0 3px rgba(88,86,214,.18);
   }
   * { box-sizing: border-box; }
   body {
-    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    background:var(--bg); color:var(--text);
+    margin:0; color:var(--text);
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    background:
+      radial-gradient(1200px 600px at 100% -10%, rgba(88,86,214,.05), transparent 60%),
+      radial-gradient(1000px 500px at -10% 0%, rgba(10,132,255,.04), transparent 55%),
+      var(--bg);
+    background-attachment:fixed;
   }
+  ::selection { background:rgba(88,86,214,.18); }
+
+  /* ---- Top app bar ---------------------------------------------------- */
   header {
-    padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--border);
-    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    position:sticky; top:0; z-index:30;
+    display:flex; align-items:center; gap:20px; flex-wrap:wrap;
+    padding:11px 22px;
+    background:linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,.72));
+    backdrop-filter:saturate(160%) blur(18px);
+    -webkit-backdrop-filter:saturate(160%) blur(18px);
+    border-bottom:1px solid var(--border);
+    box-shadow:0 1px 0 rgba(16,24,40,.03), 0 10px 30px -26px rgba(16,24,40,.5);
   }
-  header h1 { margin:0; font-size:18px; font-weight:600; }
-  header .muted { color:var(--muted); font-size:12px; }
-  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-  select, button {
-    background:var(--bg); color:var(--text); border:1px solid var(--border);
-    padding:6px 10px; border-radius:6px; font-size:13px;
+  .brand { display:flex; align-items:center; gap:13px; }
+  .brand .logo {
+    width:40px; height:40px; border-radius:12px; display:grid; place-items:center;
+    font-size:20px; background:linear-gradient(135deg,var(--accent),var(--accent-2));
+    box-shadow:0 10px 24px -8px rgba(56,189,248,.6), inset 0 1px 0 rgba(255,255,255,.3);
   }
-  button { cursor:pointer; }
-  button:hover { border-color:var(--accent); }
-  button.primary { background:var(--accent); color:#0f172a; border-color:var(--accent); font-weight:600; }
-  main { padding:16px 20px; }
-  .nodes-bar {
-    display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px;
+  .brand-text { display:flex; flex-direction:column; line-height:1.15; }
+  .brand-text h1 { margin:0; font-size:16px; font-weight:700; letter-spacing:-.015em; }
+  .brand-text .brand-sub {
+    color:var(--muted); font-size:11px; font-weight:500; letter-spacing:.4px;
+    text-transform:uppercase;
   }
+
+  .toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .field {
+    display:flex; align-items:center; gap:9px;
+    background:rgba(16,24,40,.025); border:1px solid var(--border);
+    border-radius:10px; padding:2px 4px 2px 13px; transition:border-color .15s ease, box-shadow .15s ease;
+  }
+  .field-label {
+    color:var(--muted); font-size:10px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.7px;
+  }
+  .field select {
+    background:transparent; border:none; color:var(--text);
+    padding:7px 8px; border-radius:8px; font-size:13px; font-weight:500; cursor:pointer;
+  }
+  .field select:focus { outline:none; }
+  .field:focus-within { border-color:var(--accent); box-shadow:var(--ring); }
+
+  .header-spacer { flex:1 1 auto; }
+  .status-cluster { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  .status-pill {
+    display:inline-flex; align-items:center; gap:8px;
+    background:var(--bg-elev); border:1px solid var(--border);
+    border-radius:999px; padding:6px 14px; font-size:12.5px; color:var(--text);
+    box-shadow:var(--shadow);
+  }
+  .last-update { color:var(--muted); font-size:11px; white-space:nowrap; }
+
+  select, button, .console-input input, .config-form input, .config-form select { font-family:inherit; }
+  button {
+    background:var(--bg-elev); color:var(--text); border:1px solid var(--border);
+    padding:8px 14px; border-radius:10px; font-size:13px; font-weight:600;
+    cursor:pointer; transition:all .15s ease; box-shadow:var(--shadow);
+  }
+  button:hover { border-color:var(--accent); background:#f7f8fa; }
+  button:active { transform:translateY(1px); }
+  button:focus-visible { outline:none; box-shadow:var(--ring); border-color:var(--accent); }
+  button.primary {
+    background:linear-gradient(135deg,var(--accent),var(--accent-2)); color:#fff;
+    border-color:transparent; font-weight:700;
+    box-shadow:0 6px 18px -8px rgba(88,86,214,.55);
+  }
+  button.primary:hover { filter:brightness(1.06); }
+
+  /* ---- App shell: sidebar + content ---------------------------------- */
+  .shell { display:flex; align-items:flex-start; gap:0; }
+  .sidebar {
+    position:sticky; top:63px; align-self:flex-start;
+    flex:0 0 218px; width:218px;
+    height:calc(100vh - 63px);
+    padding:16px 12px; display:flex; flex-direction:column; gap:6px;
+    border-right:1px solid var(--border);
+    background:rgba(255,255,255,.5);
+  }
+  .sidebar .nav-section {
+    color:var(--muted); font-size:10px; font-weight:700; letter-spacing:1px;
+    text-transform:uppercase; padding:6px 12px 4px; margin-top:4px;
+  }
+  main { flex:1 1 auto; min-width:0; padding:20px 24px 36px; }
+  .nodes-bar { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px; }
   .node-chip {
-    padding:8px 12px; background:var(--panel); border:1px solid var(--border);
-    border-radius:8px; cursor:pointer; min-width:130px;
-    transition:all 0.15s;
+    position:relative; padding:10px 14px 10px 16px;
+    background:var(--panel);
+    border:1px solid var(--border); border-radius:11px; cursor:pointer;
+    min-width:144px; transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+    box-shadow:var(--shadow); overflow:hidden;
   }
-  .node-chip:hover { border-color:var(--accent); }
-  .node-chip.active { border-color:var(--accent); background:#0c4a6e; }
-  .node-chip .src { font-weight:700; font-size:14px; }
-  .node-chip .meta { color:var(--muted); font-size:11px; margin-top:2px; }
-  .node-chip .stale { color:var(--warn); }
-  .node-chip .offline { color:var(--bad); }
+  .node-chip::before {
+    content:""; position:absolute; left:0; top:0; bottom:0; width:4px;
+    background:linear-gradient(180deg,var(--accent),var(--accent-2));
+    opacity:0; transition:opacity .15s ease;
+  }
+  .node-chip:hover { border-color:#cdd2da; transform:translateY(-2px); box-shadow:var(--shadow-lg); }
+  .node-chip.active { border-color:var(--accent);
+    background:linear-gradient(180deg, rgba(88,86,214,.07), rgba(255,255,255,1));
+    box-shadow:0 0 0 1px rgba(88,86,214,.2), var(--shadow-lg); }
+  .node-chip.active::before { opacity:1; }
+  .chip-head { display:flex; align-items:center; gap:8px; }
+  .chip-mac { font-weight:700; font-size:14px; letter-spacing:-.01em; }
+  .chip-age { margin-left:auto; color:var(--muted); font-size:11px;
+    font-variant-numeric:tabular-nums; }
+  .chip-dot {
+    width:8px; height:8px; border-radius:50%; background:#9ca3af; flex:0 0 8px;
+    box-shadow:0 0 0 3px rgba(156,163,175,.18);
+  }
+  .node-chip.s-online .chip-dot { background:var(--good); box-shadow:0 0 0 3px rgba(52,199,89,.2); animation:pulse 2s ease-in-out infinite; }
+  .node-chip.s-stale  .chip-dot { background:var(--warn); box-shadow:0 0 0 3px rgba(255,149,0,.22); }
+  .node-chip.s-offline .chip-dot { background:#9ca3af; }
+  .node-chip.s-stale  .chip-age { color:var(--warn); font-weight:600; }
+  .node-chip.s-offline .chip-age { color:var(--bad); font-weight:600; }
+  @keyframes pulse {
+    0%,100% { box-shadow:0 0 0 3px rgba(52,199,89,.2); }
+    50%     { box-shadow:0 0 0 5px rgba(52,199,89,.08); }
+  }
+  .chip-grid {
+    display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;
+  }
+  .chip-tag {
+    font-size:11px; color:var(--muted); background:rgba(16,24,40,.04);
+    border:1px solid var(--border-soft); border-radius:6px; padding:2px 7px;
+    font-variant-numeric:tabular-nums;
+  }
+  .chip-tag-eta { color:var(--accent); border-color:rgba(88,86,214,.25);
+    background:rgba(88,86,214,.06); font-weight:600; }
 
   .summary {
-    display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
-    gap:10px; margin-bottom:16px;
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(146px,1fr));
+    gap:12px; margin-bottom:20px;
   }
   .stat {
-    background:var(--panel); border:1px solid var(--border);
-    border-radius:8px; padding:10px 12px;
+    position:relative; overflow:hidden;
+    background:var(--panel);
+    border:1px solid var(--border); border-radius:13px;
+    padding:14px 15px 15px; box-shadow:var(--shadow);
+    transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease;
   }
-  .stat .label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:0.5px; }
-  .stat .value { font-size:20px; font-weight:700; margin-top:4px; }
-  .stat .unit { font-size:13px; color:var(--muted); margin-left:3px; font-weight:400; }
+  .stat::before {
+    content:""; position:absolute; left:0; top:0; right:0; height:3px;
+    background:linear-gradient(90deg, var(--accent), var(--accent-2)); opacity:.9;
+  }
+  .stat:nth-child(3n+2)::before { background:linear-gradient(90deg,#34c759,#30b0c7); }
+  .stat:nth-child(3n+3)::before { background:linear-gradient(90deg,#ff9500,#ff3b30); }
+  .stat:hover { transform:translateY(-3px); border-color:#cdd2da; box-shadow:var(--shadow-lg); }
+  .stat .label { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.7px; font-weight:700; }
+  .stat .value { font-size:25px; font-weight:800; margin-top:6px; letter-spacing:-.02em; line-height:1.1; }
+  .stat .unit { font-size:13px; color:var(--muted); margin-left:4px; font-weight:500; }
 
-  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:14px; }
+  .charts { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:16px; }
   .chart {
-    background:var(--panel); border:1px solid var(--border);
-    border-radius:8px; padding:8px;
+    background:var(--panel);
+    border:1px solid var(--border); border-radius:13px; padding:12px 12px 8px;
+    box-shadow:var(--shadow); transition:border-color .15s ease, box-shadow .15s ease;
   }
+  .chart:hover { border-color:#cdd2da; box-shadow:var(--shadow-lg); }
   .chart-title {
-    color:var(--muted); font-size:12px; padding:4px 8px 0; text-transform:uppercase; letter-spacing:0.5px;
+    color:var(--text); font-size:12px; padding:6px 8px 10px; text-transform:uppercase;
+    letter-spacing:.7px; font-weight:700; display:flex; align-items:center; gap:8px;
+  }
+  .chart-title::before {
+    content:""; width:8px; height:8px; border-radius:50%;
+    background:var(--accent); box-shadow:0 0 0 3px rgba(88,86,214,.16);
   }
   .placeholder {
-    text-align:center; color:var(--muted); padding:40px 20px;
-    background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    text-align:center; color:var(--muted); padding:46px 20px;
+    background:var(--panel); border:1px dashed var(--border); border-radius:var(--radius);
   }
   .footer { color:var(--muted); font-size:11px; text-align:center; margin-top:24px; padding:10px; }
 
@@ -84,13 +212,12 @@
     height:450px; border-radius:8px; border:1px solid var(--border);
     background:var(--panel);
   }
-  /* Leaflet dark filter */
-  .leaflet-tile-pane { filter: brightness(0.7) contrast(1.1) saturate(0.3); }
+  /* Leaflet (light) */
   .leaflet-control-zoom a {
     background:var(--panel)!important; color:var(--text)!important;
     border-color:var(--border)!important;
   }
-  .leaflet-control-attribution { background:rgba(15,23,42,0.7)!important; color:var(--muted)!important; }
+  .leaflet-control-attribution { background:rgba(255,255,255,0.8)!important; color:var(--muted)!important; }
   .leaflet-control-attribution a { color:var(--accent)!important; }
   .map-popup { font-family:inherit; font-size:13px; line-height:1.5; }
   .map-popup .mac { font-weight:700; font-size:14px; }
@@ -98,57 +225,727 @@
   .map-popup .stale-label { color:var(--warn); font-weight:600; }
   .leaflet-tooltip-dark {
     background:var(--panel); color:var(--text); border:1px solid var(--border);
-    font-size:11px; font-weight:700; padding:2px 6px; border-radius:4px;
+    font-size:11px; font-weight:700; padding:2px 6px; border-radius:4px; box-shadow:var(--shadow);
   }
   .leaflet-tooltip-dark::before { border-top-color:var(--border); }
+
+  /* Sidebar nav (was top pill tabs) */
+  .tabs {
+    display:flex; flex-direction:column; gap:4px;
+  }
+  .tab {
+    display:flex; align-items:center; gap:12px; width:100%; text-align:left;
+    padding:11px 14px; background:transparent; border:none; border-radius:11px;
+    color:var(--muted); font-size:14px; font-weight:600; cursor:pointer;
+    transition:all .15s ease; position:relative;
+  }
+  .tab .ico {
+    width:20px; height:20px; flex:0 0 20px; display:grid; place-items:center;
+    font-size:15px; opacity:.85;
+  }
+  .tab:hover { color:var(--text); background:rgba(16,24,40,.04); }
+  .tab.active {
+    color:var(--accent);
+    background:linear-gradient(90deg, rgba(88,86,214,.10), rgba(10,132,255,.04));
+    box-shadow:inset 0 0 0 1px rgba(88,86,214,.2);
+  }
+  .tab.active .ico { opacity:1; }
+  .tab.active::before {
+    content:""; position:absolute; left:0; top:9px; bottom:9px; width:3px;
+    border-radius:3px; background:linear-gradient(180deg,var(--accent),var(--accent-2));
+  }
+  .tab-panel { display:none; animation:fadein .2s ease; }
+  .tab-panel.active { display:block; }
+  @keyframes fadein { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+
+  /* ---- Dev / Flash panel ---------------------------------------- */
+  .devflash-grid {
+    display:grid; grid-template-columns: minmax(0,380px) minmax(0,1fr);
+    gap:16px; align-items:start;
+  }
+  .df-col { display:flex; flex-direction:column; gap:14px; min-width:0; }
+  .df-card {
+    background:var(--panel); border:1px solid var(--border); border-radius:13px;
+    padding:14px 16px; box-shadow:var(--shadow);
+  }
+  .df-card h3 {
+    margin:0 0 11px; font-size:11px; font-weight:700;
+    text-transform:uppercase; letter-spacing:.8px; color:var(--muted);
+    display:flex; align-items:center; gap:8px;
+  }
+  .df-card h3 .grow { flex:1 1 auto; }
+  .df-card h3 .mono {
+    font-family:ui-monospace,Menlo,Consolas,monospace; color:var(--text);
+    text-transform:none; letter-spacing:0; font-weight:600; font-size:12px;
+  }
+  .df-btn-sm {
+    background:var(--bg-elev); border:1px solid var(--border); border-radius:8px;
+    color:var(--text); padding:4px 10px; font-size:11.5px; font-weight:600;
+    cursor:pointer; transition:all .12s ease;
+  }
+  .df-btn-sm:hover { border-color:var(--accent); background:#f7f8fa; }
+  .df-btn-sm:disabled { opacity:.5; cursor:not-allowed; }
+
+  .dev-list, .fw-list { display:flex; flex-direction:column; gap:7px; }
+  .fw-list { max-height:240px; overflow-y:auto; padding-right:2px; }
+  .dev-item, .fw-item {
+    padding:9px 11px; border:1px solid var(--border); border-radius:9px;
+    background:var(--panel-2); cursor:pointer; transition:border-color .12s ease, box-shadow .12s ease;
+  }
+  .dev-item:hover, .fw-item:hover { border-color:var(--accent); }
+  .dev-item.selected, .fw-item.selected {
+    border-color:var(--accent);
+    box-shadow:inset 0 0 0 1px rgba(88,86,214,.35);
+    background:linear-gradient(180deg, rgba(88,86,214,.05), var(--panel));
+  }
+  .dev-item .row1, .fw-item .row1 {
+    display:flex; align-items:center; gap:8px;
+  }
+  .dev-item .name, .fw-item .name {
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-weight:600; font-size:13px;
+  }
+  .dev-item .meta, .fw-item .meta {
+    color:var(--muted); font-size:11px; margin-top:3px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; word-break:break-all;
+  }
+  .df-pill {
+    font-size:10.5px; padding:2px 8px; border-radius:999px;
+    background:rgba(10,132,255,.12); color:#0a6cff;
+    border:1px solid rgba(10,132,255,.28); font-weight:700;
+  }
+  .df-pill.dfu  { background:rgba(255,149,0,.14); color:#b25e00; border-color:rgba(255,149,0,.35); }
+  .df-pill.other{ background:rgba(105,117,134,.12); color:var(--muted); border-color:var(--border); }
+
+  .df-kv {
+    display:grid; grid-template-columns:auto 1fr; gap:4px 12px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;
+  }
+  .df-kv .k { color:var(--muted); }
+  .df-kv .v { color:var(--text); word-break:break-all; }
+
+  .df-row { display:flex; gap:9px; align-items:center; flex-wrap:wrap; }
+  .df-row select, .df-row input[type=text] {
+    background:var(--bg-elev); border:1px solid var(--border); border-radius:9px;
+    color:var(--text); padding:7px 10px; font-size:13px;
+  }
+  .df-row select:focus, .df-row input:focus {
+    outline:none; border-color:var(--accent); box-shadow:var(--ring);
+  }
+  .df-row .grow { flex:1 1 auto; }
+  .df-label {
+    color:var(--muted); font-size:10.5px; text-transform:uppercase;
+    letter-spacing:.7px; font-weight:700; margin:10px 0 5px;
+  }
+  .df-hint { color:var(--muted); font-size:12px; margin-top:7px; }
+  .df-empty {
+    color:var(--muted); font-size:12.5px; padding:14px;
+    border:1px dashed var(--border); border-radius:9px; text-align:center;
+  }
+
+  .df-log {
+    background:#0c1118; color:#cfe1f5;
+    border:1px solid #1f2937; border-radius:9px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; line-height:1.45;
+    padding:9px 11px; margin:0; max-height:280px; overflow-y:auto;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .df-log .l-info  { color:#7dd3fc; }
+  .df-log .l-log   { color:#cfe1f5; }
+  .df-log .l-error { color:#ff6c6c; }
+  .df-log .l-done.ok   { color:#65e3a4; font-weight:700; }
+  .df-log .l-done.fail { color:#ff6c6c; font-weight:700; }
+  .df-log .muted { color:#6b7785; }
+
+  .df-console-card { display:flex; flex-direction:column; gap:10px; }
+  .df-console-out {
+    background:#0c1118; color:#cfe1f5;
+    border:1px solid #1f2937; border-radius:9px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; line-height:1.45;
+    padding:9px 11px; margin:0; height:calc(100vh - 320px); min-height:360px;
+    overflow-y:auto; white-space:pre-wrap; word-break:break-word;
+  }
+  .df-console-out .l-tx    { color:#9be15d; }
+  .df-console-out .l-rx    { color:#cfe1f5; }
+  .df-console-out .l-meta  { color:#ffb454; font-style:italic; }
+  .df-console-out .l-error { color:#ff6c6c; }
+  .df-console-out .replay  { opacity:.55; }
+
+  /* ---- OTA Update panel ------------------------------------------ */
+  .ota-controls { display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px; }
+  .ota-controls label { display:flex; flex-direction:column; gap:5px; font-size:12px; color:var(--muted); }
+  .ota-controls select { padding:7px 9px; border:1px solid #cdd2da; border-radius:8px; min-width:200px; }
+  .ota-controls button {
+    padding:9px 18px; border:none; border-radius:8px; background:var(--accent);
+    color:#fff; font-weight:600; cursor:pointer;
+  }
+  .ota-controls button:disabled { opacity:.5; cursor:default; }
+  .ota-progress-wrap { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+  .ota-bar { flex:1; height:14px; background:rgba(16,24,40,.08); border-radius:7px; overflow:hidden; }
+  .ota-bar-fill { height:100%; width:0%; background:var(--accent); transition:width .3s ease; }
+  #otaLog { height:240px; min-height:0; }
+
+  .df-dot {
+    width:9px; height:9px; border-radius:50%;
+    background:#9ca3af; box-shadow:0 0 0 3px rgba(156,163,175,.18);
+  }
+  .df-dot.ok   { background:var(--good); box-shadow:0 0 0 3px rgba(52,199,89,.22); }
+  .df-dot.warn { background:var(--warn); box-shadow:0 0 0 3px rgba(255,149,0,.22); }
+  .df-dot.bad  { background:var(--bad);  box-shadow:0 0 0 3px rgba(255,59,48,.22); }
+
+  @media (max-width: 1080px) {
+    .devflash-grid { grid-template-columns: 1fr; }
+    .df-console-out { height:420px; }
+  }
+
+  /* ---- Target Tests panel --------------------------------------- */
+  .tst-list { max-height:46vh; overflow-y:auto; padding-right:2px;
+    display:flex; flex-direction:column; gap:6px; }
+  .tst-cls { border:1px solid var(--border); border-radius:9px;
+    background:var(--panel-2); padding:5px 10px; }
+  .tst-cls > summary { cursor:pointer; padding:5px 0; font-weight:600;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+    display:flex; align-items:center; gap:8px; color:var(--text);
+    list-style:none;
+  }
+  .tst-cls > summary::-webkit-details-marker { display:none; }
+  .tst-cls > summary::before {
+    content:"▸"; color:var(--muted); display:inline-block;
+    transition:transform .15s ease;
+  }
+  .tst-cls[open] > summary::before { transform:rotate(90deg); }
+  .tst-cls .tst-items { padding:4px 0 6px 22px;
+    display:flex; flex-direction:column; gap:3px; }
+  .tst-row { display:flex; align-items:center; gap:8px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px;
+    color:var(--text); }
+  .tst-row.passed  { color:#137333; }
+  .tst-row.failed  { color:#b42318; }
+  .tst-row.error   { color:#b42318; }
+  .tst-row.skipped { color:#b25e00; }
+  .tst-badge {
+    font-size:9.5px; padding:1px 6px; border-radius:999px; min-width:50px;
+    text-align:center; border:1px solid var(--border); background:var(--bg-elev);
+    font-weight:700; letter-spacing:.4px; text-transform:uppercase;
+  }
+  .tst-badge.passed  { color:#137333; border-color:rgba(52,199,89,.45); background:rgba(52,199,89,.10); }
+  .tst-badge.failed  { color:#b42318; border-color:rgba(255,59,48,.45); background:rgba(255,59,48,.10); }
+  .tst-badge.error   { color:#b42318; border-color:rgba(255,59,48,.45); background:rgba(255,59,48,.10); }
+  .tst-badge.skipped { color:#b25e00; border-color:rgba(255,149,0,.45); background:rgba(255,149,0,.10); }
+
+  .tst-dev {
+    display:flex; align-items:center; gap:9px;
+    padding:7px 10px; border:1px solid var(--border); border-radius:9px;
+    background:var(--panel-2); margin-bottom:6px; cursor:pointer;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px;
+  }
+  .tst-dev:hover { border-color:var(--accent); }
+  .tst-dev .name { font-weight:600; }
+  .tst-dev .meta { color:var(--muted); font-size:11px; margin-left:auto;
+    text-align:right; word-break:break-all; }
+
+  .tst-summary {
+    display:grid; grid-template-columns:repeat(5,1fr); gap:10px;
+    margin-bottom:8px;
+  }
+  .tst-stat {
+    background:var(--panel-2); border:1px solid var(--border);
+    border-radius:11px; padding:11px 8px; text-align:center;
+    box-shadow:var(--shadow);
+  }
+  .tst-stat .num { font-size:24px; font-weight:800; letter-spacing:-.02em;
+    font-family:ui-monospace,Menlo,Consolas,monospace; }
+  .tst-stat .lbl { font-size:10px; color:var(--muted);
+    text-transform:uppercase; letter-spacing:.7px; font-weight:700; margin-top:2px; }
+  .tst-stat.pass .num { color:var(--good); }
+  .tst-stat.fail .num { color:var(--bad); }
+  .tst-stat.err  .num { color:var(--bad); }
+  .tst-stat.skip .num { color:var(--warn); }
+
+  .tst-failure {
+    background:rgba(255,59,48,.06); border:1px solid rgba(255,59,48,.35);
+    border-radius:9px; padding:9px 11px; margin-top:8px;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px;
+    white-space:pre-wrap; overflow-x:auto; color:#7a1d12;
+  }
+  .tst-failure .ftitle { color:var(--bad); font-weight:800; margin-bottom:5px; }
+
+  .df-log.l-pass-line { color:#65e3a4; }
+  .df-log .l-pass { color:#65e3a4; }
+  .df-log .l-fail { color:#ff6c6c; }
+  .df-log .l-skip { color:#ffb454; }
+
+  @media (max-width: 860px) {
+    .shell { flex-direction:column; }
+    .sidebar { position:static; width:auto; height:auto; flex:none;
+      flex-direction:row; flex-wrap:wrap; border-right:none;
+      border-bottom:1px solid var(--border); }
+    .tabs { flex-direction:row; flex-wrap:wrap; }
+    .tab { width:auto; }
+    .sidebar .nav-section { display:none; }
+  }
+
+  /* Topology */
+  #topoGraph {
+    height:480px; border-radius:12px;
+    background:
+      linear-gradient(180deg, #fafbfc, #ffffff);
+    border:1px solid var(--border);
+  }
+  .topo-wrap {
+    background:var(--panel);
+    border:1px solid var(--border); border-radius:14px; padding:16px;
+    box-shadow:var(--shadow);
+  }
+  .topo-wrap .chart-title { font-size:13px; padding:2px 4px 12px; }
+  .topo-legend {
+    display:flex; gap:8px; flex-wrap:wrap; color:var(--muted); font-size:11.5px;
+    padding:0 0 16px; align-items:center;
+  }
+  .topo-legend > span {
+    display:inline-flex; align-items:center; gap:7px;
+    background:rgba(16,24,40,.03); border:1px solid var(--border-soft);
+    padding:5px 12px; border-radius:999px;
+  }
+  .topo-legend .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+    box-shadow:0 0 0 3px rgba(16,24,40,.04); }
+  .topo-note { color:var(--muted); font-size:12px; padding:12px 4px 2px; line-height:1.6; }
+  /* Per-device routing tables */
+  .node-tbl-grid {
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(190px, 1fr));
+    gap:10px; padding:4px 10px 10px;
+  }
+  .node-tbl {
+    background:var(--panel-2); border:1px solid var(--border);
+    border-radius:10px; padding:10px; box-shadow:var(--shadow);
+  }
+  .node-tbl-h {
+    display:flex; align-items:center; gap:6px; font-weight:600; color:var(--text);
+    font-size:13px; margin-bottom:6px;
+  }
+  .node-tbl-h .node-tbl-age { margin-left:auto; color:var(--muted); font-size:11px; font-weight:400; }
+  .node-tbl .gw-tag {
+    background:var(--accent); color:#fff; border-radius:4px; padding:1px 6px;
+    font-size:10px; font-weight:700;
+  }
+  .node-tbl table { width:100%; border-collapse:collapse; font-size:12px; }
+  .node-tbl th {
+    text-align:left; color:var(--muted); font-weight:500; padding:2px 4px;
+    border-bottom:1px solid var(--border);
+  }
+  .node-tbl td { padding:2px 4px; color:#475467; }
+  .node-tbl td .relay { color:#7c3aed; font-weight:600; }
+  .node-tbl-empty { color:var(--muted); font-size:12px; font-style:italic; }
+  #consoleOut {
+    height:480px; overflow-y:auto; background:#f7f8fa; border:1px solid var(--border);
+    border-radius:8px; padding:10px; font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:12.5px; line-height:1.45; white-space:pre-wrap; word-break:break-word;
+    color:var(--text);
+  }
+  #consoleOut .l-rx   { color:#0a6cff; }
+  #consoleOut .l-bcn  { color:#1a8f3c; }
+  #consoleOut .l-tx   { color:#b25e00; }
+  #consoleOut .l-sys  { color:#697586; font-style:italic; }
+  .console-input { display:flex; gap:8px; margin-top:8px; }
+  .console-input input {
+    flex:1; background:var(--bg-elev); border:1px solid var(--border); border-radius:8px;
+    color:var(--text); padding:8px 10px; font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:13px;
+  }
+  .console-input input:focus { outline:none; border-color:var(--accent); box-shadow:var(--ring); }
+  .console-input button {
+    background:linear-gradient(135deg,var(--accent),var(--accent-2)); border:none; color:#fff;
+    border-radius:9px; padding:8px 18px; cursor:pointer; font-weight:700;
+  }
+  .console-input button:disabled { opacity:.5; cursor:not-allowed; }
+  .config-form { display:flex; flex-wrap:wrap; gap:10px; align-items:end; padding:8px 10px 12px; }
+  .config-form label { display:flex; flex-direction:column; gap:4px; color:var(--muted); font-size:12px; }
+  .config-form input, .config-form select {
+    min-width:140px; background:var(--bg-elev); color:var(--text); border:1px solid var(--border);
+    border-radius:8px; padding:8px 10px; font-size:13px;
+  }
+  .config-form input:focus, .config-form select:focus { outline:none; border-color:var(--accent); box-shadow:var(--ring); }
+  .config-form .check { flex-direction:row; align-items:center; padding-bottom:8px; }
+  .config-form .check input { min-width:0; }
+  .config-form button { background:linear-gradient(135deg,var(--accent),var(--accent-2)); border:none; color:#fff; border-radius:9px; padding:9px 18px; font-weight:700; cursor:pointer; box-shadow:0 6px 18px -8px rgba(88,86,214,.55); }
+
+  /* Per-device config rows */
+  .cfg-rows { display:flex; flex-direction:column; gap:8px; }
+  .cfg-row {
+    display:grid;
+    grid-template-columns: auto 1fr auto auto auto auto;
+    align-items:center; gap:14px;
+    padding:10px 14px; border:1px solid var(--border); border-radius:10px;
+    background:var(--panel); box-shadow:var(--shadow);
+  }
+  .cfg-row.cfg-all { background:linear-gradient(180deg, rgba(88,86,214,.05), #fff);
+    border-color:rgba(88,86,214,.3); }
+  .cfg-row .cfg-mac { font-weight:700; font-size:14px; letter-spacing:-.01em; }
+  .cfg-row .cfg-meta { color:var(--muted); font-size:11.5px; font-variant-numeric:tabular-nums; }
+  .cfg-row .cfg-dot { width:8px; height:8px; border-radius:50%; background:#9ca3af; }
+  .cfg-row.s-online .cfg-dot { background:var(--good); }
+  .cfg-row.s-stale  .cfg-dot { background:var(--warn); }
+  .cfg-row.s-offline .cfg-dot { background:#9ca3af; }
+  .cfg-row.cfg-all .cfg-dot { background:var(--accent); }
+  .cfg-row input.cfg-interval {
+    width:72px; background:var(--bg-elev); color:var(--text);
+    border:1px solid var(--border); border-radius:8px; padding:6px 8px;
+    font-size:13px; font-variant-numeric:tabular-nums; text-align:right;
+  }
+  .cfg-row input.cfg-interval:focus { outline:none; border-color:var(--accent); box-shadow:var(--ring); }
+  .cfg-row label.cfg-persist {
+    display:inline-flex; align-items:center; gap:6px;
+    color:var(--muted); font-size:12px; cursor:pointer;
+  }
+  .cfg-row button.cfg-apply {
+    background:linear-gradient(135deg,var(--accent),var(--accent-2));
+    border:none; color:#fff; border-radius:8px; padding:6px 14px;
+    font-weight:600; font-size:12.5px; cursor:pointer;
+    box-shadow:0 4px 12px -6px rgba(88,86,214,.55);
+  }
+  .cfg-row button.cfg-apply:disabled { opacity:.55; cursor:wait; }
+  .cfg-row .cfg-state {
+    font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
+    font-variant-numeric:tabular-nums;
+  }
+  .cfg-state.s-idle    { color:var(--muted); background:rgba(16,24,40,.05); }
+  .cfg-state.s-pending { color:var(--warn);  background:rgba(255,149,0,.12); }
+  .cfg-state.s-ok      { color:var(--good);  background:rgba(52,199,89,.12); }
+  .cfg-state.s-fail    { color:var(--bad);   background:rgba(255,59,48,.12); }
+  .config-status { padding:0 10px 10px; }
+  .config-status table { width:100%; border-collapse:collapse; font-size:12px; }
+  .config-status th, .config-status td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
+  .config-status th { color:var(--muted); font-weight:500; }
+  .ok { color:#1a8f3c; } .pending { color:#b25e00; } .bad { color:#d92d20; }
 </style>
 </head>
 <body>
 <header>
-  <h1>📡 Saturn LoRa Dashboard</h1>
-  <div class="controls">
-    <label class="muted">Range:</label>
-    <select id="range">
-      <option value="1">Last 1 hour</option>
-      <option value="6">Last 6 hours</option>
-      <option value="24" selected>Last 24 hours</option>
-      <option value="72">Last 3 days</option>
-      <option value="168">Last 7 days</option>
-      <option value="720">Last 30 days</option>
-      <option value="8760">Last year</option>
-    </select>
-    <label class="muted">Auto refresh:</label>
-    <select id="refresh">
-      <option value="0">Off</option>
-      <option value="10" selected>10 s</option>
-      <option value="30">30 s</option>
-      <option value="60">60 s</option>
-    </select>
-    <button id="refreshNow">Refresh now</button>
-    <span class="muted" id="lastUpdate">—</span>
-  </div>
-</header>
-
-<main>
-  <div class="nodes-bar" id="nodesBar">
-    <div class="placeholder">Loading nodes…</div>
-  </div>
-
-  <div id="dashboard" style="display:none;">
-    <div class="summary" id="summary"></div>
-    <div class="charts" id="charts">
-      <div class="chart"><div class="chart-title">Temperature</div><div id="chart-temp" style="height:280px;"></div></div>
-      <div class="chart"><div class="chart-title">Humidity</div><div id="chart-hum" style="height:280px;"></div></div>
-      <div class="chart"><div class="chart-title">RSSI / SNR</div><div id="chart-link" style="height:280px;"></div></div>
-      <div class="chart"><div class="chart-title">Battery / Bus voltage</div><div id="chart-volt" style="height:280px;"></div></div>
-      <div class="chart"><div class="chart-title">INA219 current (mA) &amp; power (mW)</div><div id="chart-power" style="height:280px;"></div></div>
-      <div class="chart"><div class="chart-title">TX power / SF</div><div id="chart-tx" style="height:280px;"></div></div>
+  <div class="brand">
+    <span class="logo">📡</span>
+    <div class="brand-text">
+      <h1>Saturn LoRa</h1>
+      <span class="brand-sub">Mesh Network Dashboard</span>
     </div>
   </div>
 
-  <div id="mapSection" class="map-section" style="display:none;">
-    <div class="chart-title">Node Map — GPS positions from beacons</div>
-    <div id="mapContainer"></div>
+  <div class="toolbar">
+    <div class="field">
+      <span class="field-label">Range</span>
+      <select id="range">
+        <option value="1">1 hour</option>
+        <option value="6">6 hours</option>
+        <option value="24" selected>24 hours</option>
+        <option value="72">3 days</option>
+        <option value="168">7 days</option>
+        <option value="720">30 days</option>
+        <option value="8760">1 year</option>
+      </select>
+    </div>
+    <div class="field">
+      <span class="field-label">Auto</span>
+      <select id="refresh">
+        <option value="0">Off</option>
+        <option value="10" selected>10 s</option>
+        <option value="30">30 s</option>
+        <option value="60">60 s</option>
+      </select>
+    </div>
+    <button id="refreshNow">↻ Refresh</button>
+  </div>
+
+  <div class="header-spacer"></div>
+
+  <div class="status-cluster">
+    <span class="status-pill" id="deviceInfo">Connected device: —</span>
+    <span class="last-update" id="lastUpdate">—</span>
+  </div>
+</header>
+
+<div class="shell">
+<aside class="sidebar">
+  <div class="nav-section">Monitoring</div>
+  <div class="tabs" id="tabs">
+    <button class="tab active" data-tab="dashboard"><span class="ico">📊</span>Dashboard</button>
+    <button class="tab" data-tab="map"><span class="ico">🗺️</span>Map</button>
+    <button class="tab" data-tab="topology"><span class="ico">🕸️</span>Mesh Topology</button>
+    <div class="nav-section">Control</div>
+    <button class="tab" data-tab="config"><span class="ico">⚙️</span>Config</button>
+    <button class="tab" data-tab="ota"><span class="ico">⬆️</span>OTA Update</button>
+    <button class="tab" data-tab="console"><span class="ico">🖥️</span>Console</button>
+    <button class="tab" data-tab="devflash"><span class="ico">🛠️</span>Dev / Flash</button>
+    <button class="tab" data-tab="tests"><span class="ico">✅</span>Target Tests</button>
+  </div>
+</aside>
+
+<main>
+  <div id="tab-dashboard" class="tab-panel active">
+    <div class="nodes-bar" id="nodesBar">
+      <div class="placeholder">Loading nodes…</div>
+    </div>
+
+    <div id="dashboard" style="display:none;">
+      <div class="summary" id="summary"></div>
+      <div class="charts" id="charts">
+        <div class="chart"><div class="chart-title">Temperature</div><div id="chart-temp" style="height:280px;"></div></div>
+        <div class="chart"><div class="chart-title">Humidity</div><div id="chart-hum" style="height:280px;"></div></div>
+        <div class="chart"><div class="chart-title">RSSI / SNR</div><div id="chart-link" style="height:280px;"></div></div>
+        <div class="chart"><div class="chart-title">Battery / Bus voltage</div><div id="chart-volt" style="height:280px;"></div></div>
+        <div class="chart"><div class="chart-title">INA219 current (mA) &amp; power (mW)</div><div id="chart-power" style="height:280px;"></div></div>
+        <div class="chart"><div class="chart-title">TX power / SF</div><div id="chart-tx" style="height:280px;"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-map" class="tab-panel">
+    <div id="mapSection" class="map-section">
+      <div class="chart-title">Node Map — GPS positions from beacons</div>
+      <div id="mapContainer"></div>
+    </div>
+    <div id="mapEmpty" class="placeholder" style="display:none;">
+      No node has reported a valid GPS fix yet.
+    </div>
+  </div>
+
+  <div id="tab-topology" class="tab-panel">
+    <div class="topo-wrap">
+      <div class="chart-title">Mesh Topology — routing tree from the gateway</div>
+      <div class="topo-legend">
+        <span><span class="dot" style="background:#10b981"></span>Online (&lt;10 min)</span>
+        <span><span class="dot" style="background:#f59e0b"></span>Stale (&lt;24 h)</span>
+        <span><span class="dot" style="background:#6b7280"></span>Offline / not heard</span>
+        <span><span class="dot" style="background:#5856d6"></span>Gateway (this RX)</span>
+        <span>Solid = direct RF link (color = RSSI) · <span style="color:#7c3aed">purple</span> = relay hop (via next-hop) · dashed = ≥3 hops</span>
+      </div>
+      <div id="topoGraph"></div>
+      <div class="topo-note" id="topoNote">
+        Edges are built from the gateway node's live routing table
+        (<code>get routing</code>): each destination is drawn at its hop
+        distance and connected through its next-hop, so multi-hop paths such
+        as <em>gateway → 161 → 45</em> appear whenever the route is multi-hop.
+      </div>
+    </div>
+    <div class="topo-wrap" style="margin-top:16px;">
+      <div class="chart-title">Per-device routing tables (from each node's beacon)</div>
+      <div class="topo-note" style="margin-bottom:8px;">
+        Every node advertises its own routing table in each beacon
+        (<code>[BTBL]</code>). These are the tables as each remote device sees
+        the mesh — <code>dest</code> = destination, <code>via</code> = next hop,
+        <code>hops</code> = distance.
+      </div>
+      <div id="nodeTables"></div>
+    </div>
+  </div>
+
+  <div id="tab-config" class="tab-panel">
+    <div class="topo-wrap">
+      <div class="chart-title">Remote Config — beacon interval per device</div>
+      <div class="topo-note" style="margin-bottom:14px;">
+        Set the beacon interval (1–255 s) for an individual node or for all
+        devices at once. Devices ACK with <code>CMD_ACK</code>; check
+        <code>Persist</code> to also save to flash.
+      </div>
+      <div id="cfgRows" class="cfg-rows">
+        <div class="placeholder">Loading devices…</div>
+      </div>
+      <div class="chart-title" style="margin-top:18px;">Recent jobs</div>
+      <div class="config-status" id="cfgStatus">No config sent yet.</div>
+    </div>
+  </div>
+
+  <div id="tab-ota" class="tab-panel">
+    <div class="topo-wrap">
+      <div class="chart-title">OTA Update — push firmware over LoRa</div>
+      <div class="topo-note" style="margin-bottom:14px;">
+        Select a firmware image and a target node. The image is sent over the
+        mesh in 40-byte fragments (stop-and-wait, CRC-checked). When the transfer
+        completes the node verifies the whole image and reboots into it. The
+        target must already be running OTA-capable firmware, and the gateway is
+        excluded (it is the sender, not a target).
+      </div>
+      <div class="ota-controls">
+        <label>Firmware
+          <select id="otaFw"><option>Loading…</option></select>
+        </label>
+        <label>Target node
+          <select id="otaTarget"><option>Loading…</option></select>
+        </label>
+        <button id="otaStart">Start Update</button>
+      </div>
+      <div class="ota-progress-wrap">
+        <div class="ota-bar"><div class="ota-bar-fill" id="otaBarFill"></div></div>
+        <div id="otaPct" class="mono">—</div>
+      </div>
+      <div id="otaStat" class="config-status">No OTA in progress.</div>
+      <div class="chart-title" style="margin-top:14px;">Transfer log</div>
+      <div id="otaLog" class="df-console-out"></div>
+    </div>
+  </div>
+
+  <div id="tab-console" class="tab-panel">
+    <div class="topo-wrap">
+      <div class="chart-title">Device Console — shared serial port (no second instance)</div>
+      <div class="topo-legend" style="margin-bottom:8px;">
+        <span id="consoleStatus">serial: —</span>
+        <span>Type a command (e.g. <code>get mac_address</code>) and press Enter.</span>
+      </div>
+      <div id="consoleOut"></div>
+      <div class="console-input">
+        <input id="consoleCmd" type="text" autocomplete="off" spellcheck="false"
+               placeholder="command … (e.g. get mac_address)" />
+        <button id="consoleSend">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-devflash" class="tab-panel">
+    <div class="devflash-grid">
+      <div class="df-col">
+        <div class="df-card">
+          <h3>
+            USB Devices
+            <span class="grow"></span>
+            <span class="mono" id="devCount"></span>
+            <button class="df-btn-sm" id="devRefreshBtn" title="Rescan USB">↻</button>
+          </h3>
+          <div class="dev-list" id="devList">
+            <div class="df-empty">scanning…</div>
+          </div>
+        </div>
+
+        <div class="df-card" id="devInfoCard" style="display:none;">
+          <h3>
+            Selected Device
+            <span class="grow"></span>
+            <button class="df-btn-sm" id="devProbeBtn" title="version/get mac/get uid/get bor">Probe</button>
+          </h3>
+          <div class="df-kv" id="devInfo"></div>
+        </div>
+
+        <div class="df-card">
+          <h3>
+            Firmware
+            <span class="grow"></span>
+            <span class="mono" id="fwCount"></span>
+            <button class="df-btn-sm" id="fwRefreshBtn" title="Rescan .bin files">↻</button>
+          </h3>
+          <div class="fw-list" id="fwList">
+            <div class="df-empty">loading…</div>
+          </div>
+        </div>
+
+        <div class="df-card">
+          <h3>Flash</h3>
+          <div class="df-row">
+            <span class="df-label" style="margin:0">Method</span>
+            <select id="flashMethod">
+              <option value="dfu">USB DFU (--enter)</option>
+              <option value="swd">SWD (sudo openocd)</option>
+            </select>
+            <span class="grow"></span>
+            <button class="primary" id="flashBtn" disabled>Flash</button>
+          </div>
+          <div class="df-hint" id="flashHint">select a device + firmware</div>
+          <div class="df-label">Output</div>
+          <pre class="df-log" id="jobLog"><span class="muted">no flash run yet</span></pre>
+        </div>
+
+        <div class="df-card">
+          <h3>OTA Update <span class="grow"></span><span class="mono" style="color:var(--muted)">(future work)</span></h3>
+          <div class="df-empty">OTA upload over LoRa is not wired up yet — placeholder reserved.</div>
+        </div>
+      </div>
+
+      <div class="df-col">
+        <div class="df-card df-console-card">
+          <h3>
+            Device Console
+            <span class="mono" id="devConsoleLabel"></span>
+            <span class="grow"></span>
+            <span class="df-dot" id="devConsoleDot"></span>
+            <span class="mono" id="devConsoleStatus" style="color:var(--muted)">disconnected</span>
+            <button class="df-btn-sm" id="devConsoleClear">Clear</button>
+            <button class="df-btn-sm" id="devConsoleReopen">Reopen</button>
+          </h3>
+          <pre class="df-console-out" id="devConsoleOut"></pre>
+          <div class="df-row">
+            <input type="text" id="devConsoleInput" class="grow" autocomplete="off" spellcheck="false"
+                   placeholder="type command, e.g. 'help', 'get mac_address', 'dfu' — ↑/↓ history">
+            <button class="primary" id="devConsoleSend">Send</button>
+          </div>
+          <div class="df-hint">Direct serial to the selected board (bypasses the gateway). Common: <code>help</code>, <code>version</code>, <code>get mac_address</code>, <code>get uid</code>, <code>get bor</code>, <code>dfu</code>.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="tab-tests" class="tab-panel">
+    <div class="devflash-grid">
+      <div class="df-col">
+        <div class="df-card">
+          <h3>
+            Devices for Tests
+            <span class="grow"></span>
+            <span class="mono" id="tstDevCount"></span>
+            <button class="df-btn-sm" id="tstDevRefresh" title="Rescan USB">↻</button>
+          </h3>
+          <div id="tstDevList"><div class="df-empty">scanning…</div></div>
+          <div class="df-hint">Most tests need 1 device; <code>TestDeviceCommunication*</code> classes need 2. Pytest receives these via <code>SERIAL_PORTS</code>.</div>
+        </div>
+
+        <div class="df-card">
+          <h3>
+            Tests
+            <span class="grow"></span>
+            <button class="df-btn-sm" id="tstAll">All</button>
+            <button class="df-btn-sm" id="tstNone">None</button>
+            <button class="df-btn-sm" id="tstRefresh" title="pytest --collect-only">↻</button>
+          </h3>
+          <div class="df-row" style="margin-bottom:10px">
+            <input type="text" id="tstKFilter" class="grow"
+                   placeholder="optional pytest -k expression">
+          </div>
+          <div id="tstList" class="tst-list">
+            <div class="df-empty">loading…</div>
+          </div>
+        </div>
+
+        <div class="df-card">
+          <h3>Run</h3>
+          <div class="df-row">
+            <button class="primary" id="tstRunBtn" disabled>▶ Run selected</button>
+            <span class="df-hint" id="tstRunHint" style="margin:0">pick devices &amp; tests</span>
+          </div>
+          <div class="df-hint">Closes any open dev console for the selected ports, runs pytest with <code>SERIAL_PORTS</code>, writes JUnit XML.</div>
+        </div>
+      </div>
+
+      <div class="df-col">
+        <div class="df-card">
+          <h3>
+            Summary
+            <span class="grow"></span>
+            <span class="mono" id="tstSummaryHead" style="color:var(--muted)"></span>
+          </h3>
+          <div class="tst-summary">
+            <div class="tst-stat"><div class="num" id="tstTot">–</div><div class="lbl">Total</div></div>
+            <div class="tst-stat pass"><div class="num" id="tstPass">–</div><div class="lbl">Passed</div></div>
+            <div class="tst-stat fail"><div class="num" id="tstFail">–</div><div class="lbl">Failed</div></div>
+            <div class="tst-stat err"><div class="num" id="tstErr">–</div><div class="lbl">Errors</div></div>
+            <div class="tst-stat skip"><div class="num" id="tstSkip">–</div><div class="lbl">Skipped</div></div>
+          </div>
+          <div id="tstFailures"></div>
+        </div>
+
+        <div class="df-card">
+          <h3>
+            Output
+            <span class="grow"></span>
+            <span class="mono" id="tstJobLabel" style="color:var(--muted)"></span>
+          </h3>
+          <pre class="df-log" id="tstJobLog" style="max-height:calc(100vh - 460px); min-height:280px;"><span class="muted">no run yet</span></pre>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="emptyState" class="placeholder" style="display:none;">
@@ -159,6 +956,7 @@
     Saturn LoRa Web Dashboard · drag to zoom, double-click to reset · data persisted to SQLite
   </div>
 </main>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -167,10 +965,10 @@ let activeSrc = null;
 let refreshTimer = null;
 const layoutDark = {
   paper_bgcolor:'rgba(0,0,0,0)', plot_bgcolor:'rgba(0,0,0,0)',
-  font:{color:'#e2e8f0', size:11},
+  font:{color:'#1c2330', size:11},
   margin:{l:50,r:20,t:10,b:35},
-  xaxis:{gridcolor:'#334155', zerolinecolor:'#334155'},
-  yaxis:{gridcolor:'#334155', zerolinecolor:'#334155'},
+  xaxis:{gridcolor:'#e4e7ec', zerolinecolor:'#e4e7ec'},
+  yaxis:{gridcolor:'#e4e7ec', zerolinecolor:'#e4e7ec'},
   legend:{orientation:'h', y:-0.2},
   hovermode:'x unified',
 };
@@ -192,11 +990,29 @@ function fmtTs(ts) {
   return d.toLocaleString();
 }
 
+async function loadDevice() {
+  try {
+    const j = await (await fetch('/api/device')).json();
+    const d = j.device || {};
+    const el = $('deviceInfo');
+    if (d.mac == null) {
+      el.textContent = 'Connected device: waiting for self-beacon…';
+      el.style.color = 'var(--muted)';
+      return;
+    }
+    const port = d.port ? ` (${d.port})` : '';
+    const fresh = d.age != null && d.age < 120;
+    el.innerHTML = `Connected device: <b style="color:var(--accent)">MAC ${d.mac}</b>${port}` +
+      (fresh ? '' : ` · last self-beacon ${fmtAge(d.age)} ago`);
+    el.style.color = 'var(--text)';
+  } catch (e) { /* ignore */ }
+}
+
 async function loadNodes() {
   const r = await fetch('/api/nodes');
   const j = await r.json();
   nodes = j.nodes || [];
-  const now = j.now;
+  nodesNowOffset = j.now - Math.floor(Date.now()/1000);
   const bar = $('nodesBar');
   if (nodes.length === 0) {
     bar.innerHTML = '<div class="placeholder">No nodes have transmitted beacons yet.</div>';
@@ -207,21 +1023,55 @@ async function loadNodes() {
   $('emptyState').style.display = 'none';
   bar.innerHTML = '';
   for (const n of nodes) {
-    const age = now - n.last_seen;
-    const cls = age > 86400 ? 'offline' : (age > 600 ? 'stale' : '');
+    const interval = (n.count > 1 && n.last_seen > n.first_seen)
+      ? Math.max(1, Math.round((n.last_seen - n.first_seen) / (n.count - 1)))
+      : null;
     const div = document.createElement('div');
     div.className = 'node-chip' + (n.src === activeSrc ? ' active' : '');
+    div.dataset.src = n.src;
+    div.dataset.lastSeen = n.last_seen;
+    div.dataset.interval = interval ?? '';
     div.innerHTML = `
-      <div class="src">MAC ${n.src}</div>
-      <div class="meta ${cls}">last: ${fmtAge(age)} ago · ${n.count} beacons</div>
-    `;
+      <div class="chip-head">
+        <span class="chip-dot" data-dot></span>
+        <span class="chip-mac">MAC ${n.src}</span>
+        <span class="chip-age" data-age>—</span>
+      </div>
+      <div class="chip-grid">
+        <span class="chip-tag" title="Average beacon interval (from history)">⏱ ${interval ? interval + 's' : '—'}</span>
+        <span class="chip-tag" title="Total beacons received">• ${n.count}</span>
+        <span class="chip-tag chip-tag-eta" data-eta></span>
+      </div>`;
     div.onclick = () => selectNode(n.src);
     bar.appendChild(div);
   }
+  tickChips();
   if (activeSrc === null && nodes.length > 0) {
     selectNode(nodes[0].src);
   }
 }
+
+let nodesNowOffset = 0;
+function tickChips() {
+  const nowServer = Math.floor(Date.now()/1000) + nodesNowOffset;
+  document.querySelectorAll('.node-chip').forEach(el => {
+    const ls = parseInt(el.dataset.lastSeen, 10);
+    const iv = parseInt(el.dataset.interval, 10);
+    if (!ls) return;
+    const age = Math.max(0, nowServer - ls);
+    const stateClass = age > 86400 ? 'offline' : (age > 600 ? 'stale' : 'online');
+    el.classList.remove('s-online','s-stale','s-offline');
+    el.classList.add('s-' + stateClass);
+    el.querySelector('[data-age]').textContent = fmtAge(age) + ' ago';
+    const etaEl = el.querySelector('[data-eta]');
+    if (iv && stateClass !== 'offline') {
+      const due = iv - age;
+      if (due > 0) { etaEl.textContent = 'next ~' + due + 's'; etaEl.style.display = ''; }
+      else { etaEl.textContent = 'overdue ' + (-due) + 's'; etaEl.style.display = ''; }
+    } else { etaEl.style.display = 'none'; }
+  });
+}
+setInterval(tickChips, 1000);
 
 function selectNode(src) {
   activeSrc = src;
@@ -332,13 +1182,22 @@ function setupRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   const sec = parseInt($('refresh').value, 10);
   if (sec > 0) {
-    refreshTimer = setInterval(() => { loadNodes(); refreshData(); refreshMap(); }, sec*1000);
+    refreshTimer = setInterval(() => {
+      loadNodes(); refreshData(); refreshMap(); loadDevice();
+      if (activeTab === 'topology') refreshTopology();
+    }, sec*1000);
   }
 }
+// The console needs near-real-time updates regardless of the chart refresh
+// rate, so poll it on its own fast timer whenever its tab is visible.
+setInterval(() => { if (activeTab === 'console') refreshConsole(); }, 1200);
 
 $('refresh').addEventListener('change', setupRefresh);
 $('range').addEventListener('change', refreshData);
-$('refreshNow').addEventListener('click', () => { loadNodes(); refreshData(); });
+$('refreshNow').addEventListener('click', () => {
+  loadNodes(); refreshData(); refreshMap(); loadDevice();
+  if (activeTab === 'topology') refreshTopology();
+});
 
 // ---- Map ----
 let leafletMap = null;
@@ -374,10 +1233,12 @@ async function refreshMap() {
 
   if (mapNodes.length === 0) {
     $('mapSection').style.display = 'none';
+    $('mapEmpty').style.display = 'block';
     return;
   }
 
   $('mapSection').style.display = 'block';
+  $('mapEmpty').style.display = 'none';
   initMap();
 
   // clear old markers
@@ -434,7 +1295,1164 @@ async function refreshMap() {
   setTimeout(() => leafletMap.invalidateSize(), 100);
 }
 
-loadNodes().then(() => { setupRefresh(); refreshMap(); });
+// ---- Tabs ----
+let activeTab = 'dashboard';
+function selectTab(name) {
+  activeTab = name;
+  document.querySelectorAll('.tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p =>
+    p.classList.toggle('active', p.id === 'tab-' + name));
+  if (name === 'map' && leafletMap) {
+    setTimeout(() => leafletMap.invalidateSize(), 60);
+  }
+  if (name === 'topology') {
+    refreshTopology();
+  }
+  if (name === 'config') {
+    refreshConfig();
+  }
+  if (name === 'ota') {
+    otaOnEnter();
+  } else {
+    otaOnLeave();
+  }
+  if (name === 'console') {
+    refreshConsole();
+    setTimeout(() => $('consoleCmd').focus(), 50);
+  }
+  if (name === 'devflash') {
+    devflashOnEnter();
+  } else {
+    devflashOnLeave();
+  }
+  if (name === 'tests') {
+    testsOnEnter();
+  } else {
+    testsOnLeave();
+  }
+}
+document.querySelectorAll('.tab').forEach(t =>
+  t.addEventListener('click', () => selectTab(t.dataset.tab)));
+
+// ---- Remote config ----
+async function refreshConfig() {
+  const r = await fetch('/api/config/status');
+  const j = await r.json();
+  const host = $('cfgRows');
+  if (!host) return;
+
+  // Latest job per target ("all" or MAC string) for inline status.
+  const lastByTarget = {};
+  (j.jobs || []).forEach(job => {
+    const k = String(job.target);
+    const prev = lastByTarget[k];
+    if (!prev || job.age < prev.age) lastByTarget[k] = job;
+  });
+
+  // Live age + interval estimate from /api/nodes (already fetched into `nodes`).
+  const nowServer = Math.floor(Date.now()/1000) + nodesNowOffset;
+  const byMac = {};
+  nodes.forEach(n => {
+    const interval = (n.count > 1 && n.last_seen > n.first_seen)
+      ? Math.max(1, Math.round((n.last_seen - n.first_seen) / (n.count - 1)))
+      : null;
+    byMac[n.src] = { age: nowServer - n.last_seen, interval, count: n.count };
+  });
+
+  const rows = [];
+  rows.push(buildCfgRow('all', null, lastByTarget['all']));
+  (j.known_nodes || []).forEach(m => {
+    rows.push(buildCfgRow(String(m), byMac[m] || null, lastByTarget[String(m)]));
+  });
+  host.innerHTML = '';
+  rows.forEach(r => host.appendChild(r));
+
+  // Recent jobs log (compact)
+  const jobs = j.jobs || [];
+  if (!jobs.length) {
+    $('cfgStatus').textContent = 'No config sent yet.';
+  } else {
+    let html = '<table><thead><tr><th>Age</th><th>Target</th><th>Interval</th><th>Persist</th><th>ACKed</th><th>Pending</th></tr></thead><tbody>';
+    jobs.slice().reverse().slice(0, 8).forEach(job => {
+      const acked = (job.acked || []).join(', ') || '—';
+      const pending = (job.pending || []).join(', ') || '—';
+      const cls = (job.pending || []).length ? 'pending' : 'ok';
+      html += `<tr><td>${job.age}s</td><td>${job.target}</td>` +
+              `<td>${job.interval}s</td><td>${job.persist ? 'yes' : 'no'}</td>` +
+              `<td class="ok">${acked}</td><td class="${cls}">${pending}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    $('cfgStatus').innerHTML = html;
+  }
+}
+
+function buildCfgRow(target, info, lastJob) {
+  const row = document.createElement('div');
+  const isAll = target === 'all';
+  let stateClass = isAll ? '' : (info ? (info.age > 86400 ? 's-offline' : info.age > 600 ? 's-stale' : 's-online') : 's-offline');
+  row.className = 'cfg-row ' + (isAll ? 'cfg-all ' : '') + stateClass;
+
+  const macLabel = isAll ? 'All devices' : `MAC ${target}`;
+  const sub = isAll
+    ? 'broadcast to every node'
+    : (info ? `last ${fmtAge(info.age)} ago · ~${info.interval ? info.interval+'s' : '—'} interval · ${info.count} beacons`
+            : 'no beacons yet');
+
+  let stateBadge = '<span class="cfg-state s-idle">idle</span>';
+  if (lastJob) {
+    const acked = (lastJob.acked || []).length;
+    const pending = (lastJob.pending || []).length;
+    if (pending > 0) stateBadge = `<span class="cfg-state s-pending">${acked}/${acked+pending} ack · ${lastJob.age}s ago</span>`;
+    else if (acked > 0) stateBadge = `<span class="cfg-state s-ok">ok · ${lastJob.age}s ago</span>`;
+    else stateBadge = `<span class="cfg-state s-idle">sent · ${lastJob.age}s ago</span>`;
+  }
+  const defInterval = lastJob ? lastJob.interval : 10;
+
+  row.innerHTML = `
+    <span class="cfg-dot"></span>
+    <div>
+      <div class="cfg-mac">${macLabel}</div>
+      <div class="cfg-meta">${sub}</div>
+    </div>
+    <input class="cfg-interval" type="number" min="1" max="255" value="${defInterval}" title="Beacon interval (s)">
+    <span class="cfg-meta">sec</span>
+    <label class="cfg-persist"><input type="checkbox" class="cfg-persist-cb"> persist</label>
+    <span style="display:flex; gap:8px; align-items:center;">
+      ${stateBadge}
+      <button class="cfg-apply">Apply</button>
+    </span>
+  `;
+  const btn = row.querySelector('.cfg-apply');
+  btn.onclick = async () => {
+    const interval = parseInt(row.querySelector('.cfg-interval').value, 10);
+    const persist = row.querySelector('.cfg-persist-cb').checked;
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      const r = await fetch('/api/config/beacon', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({interval, target, persist}),
+      });
+      const j = await r.json();
+      if (!j.ok) alert(j.error || 'config send failed');
+      await refreshConfig();
+    } finally { btn.disabled = false; btn.textContent = 'Apply'; }
+  };
+  return row;
+}
+
+setInterval(() => { if (activeTab === 'config') refreshConfig(); }, 2000);
+
+// ---- OTA update ----
+let otaPollTimer = null;
+async function otaOnEnter() {
+  await Promise.all([loadOtaFirmwares(), loadOtaTargets()]);
+  refreshOta();
+  if (!otaPollTimer)
+    otaPollTimer = setInterval(() => { if (activeTab === 'ota') refreshOta(); }, 1000);
+}
+function otaOnLeave() {
+  if (otaPollTimer) { clearInterval(otaPollTimer); otaPollTimer = null; }
+}
+async function loadOtaFirmwares() {
+  const sel = $('otaFw');
+  try {
+    const j = await (await fetch('/api/firmwares')).json();
+    const fws = j.firmwares || [];
+    sel.innerHTML = '';
+    if (!fws.length) { sel.innerHTML = '<option value="">(no .bin found)</option>'; return; }
+    fws.forEach(f => {
+      const o = document.createElement('option');
+      o.value = f.name;
+      o.textContent = `${f.name} (${dfFmtSize(f.size)})`;
+      sel.appendChild(o);
+    });
+    const def = fws.find(f => f.name.endsWith('lora.bin'));
+    if (def) sel.value = def.name;
+  } catch (e) { sel.innerHTML = '<option value="">(error)</option>'; }
+}
+async function loadOtaTargets() {
+  const sel = $('otaTarget');
+  try {
+    const j = await (await fetch('/api/config/status')).json();
+    const gw = j.gateway ? j.gateway.mac : null;
+    const known = (j.known_nodes || []).filter(m => gw == null || m !== gw);
+    const prev = sel.value;
+    sel.innerHTML = '';
+    if (!known.length) { sel.innerHTML = '<option value="">(no remote nodes seen yet)</option>'; return; }
+    known.forEach(m => {
+      const o = document.createElement('option');
+      o.value = m; o.textContent = `Node ${m}`;
+      sel.appendChild(o);
+    });
+    if (prev && known.includes(+prev)) sel.value = prev;
+  } catch (e) { sel.innerHTML = '<option value="">(error)</option>'; }
+}
+async function startOta() {
+  const fw = $('otaFw').value;
+  const target = parseInt($('otaTarget').value, 10);
+  if (!fw || !target) { alert('Pick a firmware and a target node.'); return; }
+  if (!confirm(`Send ${fw} to node ${target} over LoRa?\nThe node will reboot into the new firmware.`)) return;
+  const btn = $('otaStart'); btn.disabled = true;
+  try {
+    const r = await fetch('/api/ota/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, firmware: fw }),
+    });
+    const j = await r.json();
+    if (!j.ok) alert('OTA failed to start: ' + (j.error || 'unknown'));
+  } catch (e) { alert('OTA start error: ' + e); }
+  finally { setTimeout(() => { btn.disabled = false; }, 1500); refreshOta(); }
+}
+async function refreshOta() {
+  let j;
+  try { j = await (await fetch('/api/ota/status')).json(); } catch (e) { return; }
+  const o = j.ota;
+  const fill = $('otaBarFill'), pct = $('otaPct'), stat = $('otaStat'), log = $('otaLog');
+  if (!fill) return;
+  if (!o) {
+    fill.style.width = '0%'; pct.textContent = '—';
+    stat.textContent = j.serial_open ? 'No OTA in progress.' : 'Serial not connected.';
+    if (log) log.innerHTML = '';
+    return;
+  }
+  const frac = o.total ? Math.min(1, o.sent_bytes / o.total) : 0;
+  fill.style.width = (frac * 100).toFixed(1) + '%';
+  pct.textContent = `${(frac * 100).toFixed(0)}% (${o.sent_bytes}/${o.total} B)`;
+  const label = { running: 'running…', done: '✅ complete — node rebooting',
+                  error: '❌ ' + (o.error || 'error') }[o.state] || o.state;
+  stat.innerHTML = `<b>${dfEsc(o.firmware)}</b> → node ${o.target} — ${label}` +
+                   ` · chunks ${o.sent_chunks}/${o.chunks} · retries ${o.retries} · crc ${o.crc}`;
+  if (log) {
+    log.innerHTML = (o.log || []).map(l =>
+      `<div class="l-rx">${fmtTs(l.ts)} ${dfEsc(l.msg)}</div>`).join('');
+    log.scrollTop = log.scrollHeight;
+  }
+}
+{ const b = $('otaStart'); if (b) b.addEventListener('click', startOta); }
+
+// ---- Device console (shared serial port) ----
+let consoleSeq = 0;
+function classifyLine(text) {
+  if (text.startsWith('>>')) return 'l-tx';
+  if (text.startsWith('[')) {
+    if (text.startsWith('[RX]')) return 'l-rx';
+    if (text.startsWith('[BEACON]')) return 'l-bcn';
+    return 'l-sys';
+  }
+  return '';
+}
+async function refreshConsole() {
+  let j;
+  try {
+    const r = await fetch('/api/console?since=' + consoleSeq);
+    j = await r.json();
+  } catch (e) { return; }
+  const st = $('consoleStatus');
+  if (st) st.textContent = 'serial: ' + (j.serial_open ? 'connected' : 'closed');
+  const out = $('consoleOut');
+  if (j.lines && j.lines.length) {
+    const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+    const frag = document.createDocumentFragment();
+    for (const ln of j.lines) {
+      const div = document.createElement('div');
+      const cls = classifyLine(ln.text);
+      if (cls) div.className = cls;
+      div.textContent = ln.text;
+      frag.appendChild(div);
+    }
+    out.appendChild(frag);
+    consoleSeq = j.last;
+    // Trim DOM to keep it light.
+    while (out.childNodes.length > 2000) out.removeChild(out.firstChild);
+    if (atBottom) out.scrollTop = out.scrollHeight;
+  } else if (j.last != null) {
+    consoleSeq = j.last;
+  }
+}
+async function sendConsoleCmd() {
+  const inp = $('consoleCmd');
+  const cmd = inp.value.trim();
+  if (!cmd) return;
+  inp.value = '';
+  try {
+    await fetch('/api/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd }),
+    });
+  } catch (e) { /* ignore */ }
+  refreshConsole();
+}
+$('consoleSend').addEventListener('click', sendConsoleCmd);
+$('consoleCmd').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); sendConsoleCmd(); }
+});
+
+// ---- Mesh topology ----
+function topoColor(age) {
+  if (age > 86400) return '#6b7280';   // offline
+  if (age > 600)   return '#f59e0b';   // stale
+  return '#10b981';                    // online
+}
+// Map RSSI (dBm) → edge color (green strong … red weak)
+function rssiColor(rssi) {
+  if (rssi == null) return '#475569';
+  if (rssi >= -70)  return '#10b981';
+  if (rssi >= -90)  return '#84cc16';
+  if (rssi >= -105) return '#f59e0b';
+  if (rssi >= -118) return '#f97316';
+  return '#ef4444';
+}
+
+async function refreshTopology() {
+  const r = await fetch('/api/topology');
+  const j = await r.json();
+  const allNodes = j.nodes || [];
+  const routes = j.routes || [];
+  const gwMac = j.gateway ? j.gateway.mac : null;
+  const note = $('topoNote');
+
+  const nodesByMac = {};
+  allNodes.forEach(nd => { nodesByMac[nd.src] = nd; });
+  const routeByDest = {};
+  routes.forEach(rt => { routeByDest[rt.dest] = rt; });
+
+  // ---- Build the mesh graph (rooted at the gateway) -------------------
+  // tier = hop distance from gateway; parent = the node we reach it through.
+  const tier = {};      // mac -> hops from gateway
+  const parent = {};    // mac -> parent mac, or 'gw'
+  routes.forEach(rt => {
+    if (gwMac != null && rt.dest === gwMac) return;   // never route to self
+    tier[rt.dest] = rt.hops;
+    parent[rt.dest] = (rt.hops <= 1) ? 'gw' : rt.next_hop;
+  });
+  // A next-hop is by definition a direct neighbour (1 hop).
+  routes.forEach(rt => {
+    if (rt.hops >= 2 && tier[rt.next_hop] === undefined) {
+      tier[rt.next_hop] = 1; parent[rt.next_hop] = 'gw';
+    }
+  });
+  // Any node we heard a beacon from directly is a 1-hop neighbour.
+  allNodes.forEach(nd => {
+    if (nd.is_gateway) return;
+    if (tier[nd.src] === undefined) { tier[nd.src] = 1; parent[nd.src] = 'gw'; }
+  });
+
+  const macSet = new Set(Object.keys(tier).map(Number));
+  if (macSet.size === 0) {
+    Plotly.purge('topoGraph');
+    note.textContent = gwMac != null
+      ? `Gateway is MAC ${gwMac}. No nodes heard yet — nothing to draw.`
+      : 'No nodes heard yet — nothing to draw.';
+    return;
+  }
+
+  // ---- Layout: top-down hierarchical tree, children spaced under parent ----
+  // Gateway at top (y=0), tier N at y=-N. X = horizontal slot.
+  const byTier = {};
+  macSet.forEach(m => { const t = tier[m] || 1; (byTier[t] = byTier[t] || []).push(m); });
+  const maxTier = Math.max(1, ...[...macSet].map(m => tier[m] || 1));
+  // Sort each tier so siblings of the same parent stay contiguous
+  for (const t of Object.keys(byTier)) {
+    byTier[t].sort((a, b) => {
+      const pa = parent[a], pb = parent[b];
+      if (pa !== pb) return String(pa).localeCompare(String(pb));
+      return a - b;
+    });
+  }
+  const XSTEP = 2.6;
+  const pos = {};
+  // Place each tier centered horizontally.
+  for (let t = 1; t <= maxTier; t++) {
+    const arr = byTier[t] || [];
+    const total = arr.length;
+    arr.forEach((m, i) => {
+      const x = (i - (total - 1) / 2) * XSTEP;
+      pos[m] = { x, y: -t * 2.0 };
+    });
+  }
+  // Gateway centered above tier 1.
+  pos.gw = { x: 0, y: 0 };
+  // Compute extents for axis range.
+  const xs = Object.values(pos).map(p => p.x);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+
+  // ---- Edges -----------------------------------------------------------
+  const edgeTraces = [];
+  const elx = [], ely = [], elt = [];
+  function addEdge(aMac, bMac, color, width, dash, label) {
+    const A = pos[aMac], B = pos[bMac];
+    if (!A || !B) return;
+    // soft glow underlay
+    edgeTraces.push({
+      x: [A.x, B.x], y: [A.y, B.y], mode: 'lines', type: 'scatter',
+      hoverinfo: 'none', showlegend: false, opacity: 0.14,
+      line: { color, width: width * 3.4 },
+    });
+    edgeTraces.push({
+      x: [A.x, B.x], y: [A.y, B.y], mode: 'lines', type: 'scatter',
+      hoverinfo: 'none', showlegend: false,
+      line: { color, width, dash: dash || 'solid' },
+    });
+    if (label) { elx.push((A.x + B.x) / 2); ely.push((A.y + B.y) / 2); elt.push(label); }
+  }
+  // Direct RF links: gateway → every 1-hop neighbour (RSSI-coloured).
+  (byTier[1] || []).forEach(m => {
+    const nd = nodesByMac[m];
+    addEdge('gw', m, rssiColor(nd && nd.rssi), 3, 'solid',
+      nd ? `${nd.rssi ?? '—'}/${nd.snr ?? '—'}` : 'direct');
+  });
+  // Relay links: each multi-hop route drawn from its next-hop to the dest.
+  routes.forEach(rt => {
+    if (rt.hops >= 2 && rt.dest !== gwMac) {
+      addEdge(rt.next_hop, rt.dest, '#7c3aed', 2.5,
+        rt.hops > 2 ? 'dash' : 'solid', `${rt.hops} hops`);
+    }
+  });
+
+  const edgeLabelTrace = {
+    x: elx, y: ely, text: elt, mode: 'text', type: 'scatter',
+    hoverinfo: 'none', textfont: { color: '#697586', size: 10 }, showlegend: false,
+  };
+
+  // ---- Node markers ----------------------------------------------------
+  const macs = [...macSet];
+  const nodeTrace = {
+    x: macs.map(m => pos[m].x), y: macs.map(m => pos[m].y),
+    mode: 'markers+text', type: 'scatter',
+    text: macs.map(m => {
+      const nd = nodesByMac[m] || {};
+      const ageStr = nd.age != null ? fmtAge(nd.age) : '—';
+      const rssiStr = nd.rssi != null ? `${nd.rssi} dBm` : '—';
+      return `<b>MAC ${m}</b><br><span style="font-size:10px;color:#697586">${rssiStr} · ${ageStr}</span>`;
+    }),
+    textposition: 'bottom center',
+    textfont: { color: '#1c2330', size: 12 },
+    marker: {
+      size: macs.map(m => { const nd = nodesByMac[m]; return 18 + Math.min(10, ((nd && nd.entries) || 0) * 2.5); }),
+      color: macs.map(m => { const nd = nodesByMac[m]; return nd ? topoColor(nd.age) : '#6b7280'; }),
+      line: { color: '#ffffff', width: 3 },
+    },
+    customdata: macs.map(m => {
+      const nd = nodesByMac[m] || {}; const rt = routeByDest[m] || {};
+      return [
+        m, nd.rssi ?? '—', nd.snr ?? '—', tier[m] || 1,
+        (rt.hops >= 2 ? rt.next_hop : 'direct'), nd.entries ?? 0,
+        nd.age != null ? fmtAge(nd.age) : 'never',
+      ];
+    }),
+    hovertemplate:
+      '<b>MAC %{customdata[0]}</b><br>' +
+      'RSSI %{customdata[1]} dBm · SNR %{customdata[2]} dB<br>' +
+      'Hops from gateway: %{customdata[3]} · next-hop: %{customdata[4]}<br>' +
+      'Routes known: %{customdata[5]}<br>' +
+      'Last beacon: %{customdata[6]} ago' +
+      '<extra></extra>',
+    showlegend: false,
+  };
+
+  // Gateway marker (center).
+  const gwLabel = gwMac != null ? `Gateway · MAC ${gwMac}` : 'Gateway (RX)';
+  const gwTrace = {
+    x: [0], y: [0], mode: 'markers+text', type: 'scatter',
+    text: [`<b>Gateway</b><br><span style="font-size:10px;color:#697586">MAC ${gwMac ?? '—'} · this RX</span>`],
+    textposition: 'top center',
+    textfont: { color: '#5856d6', size: 12 },
+    marker: { size: 26, color: '#5856d6', symbol: 'square',
+              line: { color: '#ffffff', width: 3 } },
+    hovertemplate: `<b>${gwLabel}</b><br>This receiver<extra></extra>`,
+    showlegend: false,
+  };
+
+  // soft glow halos behind markers
+  const nodeGlow = {
+    x: macs.map(m => pos[m].x), y: macs.map(m => pos[m].y),
+    mode: 'markers', type: 'scatter', hoverinfo: 'none', showlegend: false,
+    marker: {
+      size: macs.map(m => { const nd = nodesByMac[m]; return 18 + Math.min(10, ((nd && nd.entries) || 0) * 2.5); }),
+      color: macs.map(m => { const nd = nodesByMac[m]; return nd ? topoColor(nd.age) : '#6b7280'; }),
+      opacity: 0.14, line: { width: 0 },
+    },
+  };
+  const gwGlow = {
+    x: [0], y: [0], mode: 'markers', type: 'scatter', hoverinfo: 'none', showlegend: false,
+    marker: { size: 36, color: '#5856d6', opacity: 0.14, line: { width: 0 } },
+  };
+
+  // Subtle horizontal tier bands + tier labels on the left.
+  const bandShapes = [];
+  const tierAnnots = [{
+    x: xMin - 1.2, y: 0, xref: 'x', yref: 'y',
+    text: '<b>GW</b>', showarrow: false,
+    font: { color: '#5856d6', size: 11 }, xanchor: 'left',
+  }];
+  for (let t = 1; t <= maxTier; t++) {
+    const y = -t * 2.0;
+    bandShapes.push({
+      type: 'line', xref: 'paper', yref: 'y',
+      x0: 0, x1: 1, y0: y, y1: y,
+      line: { color: 'rgba(100,116,139,0.14)', width: 1, dash: 'dot' },
+    });
+    tierAnnots.push({
+      x: xMin - 1.2, y, xref: 'x', yref: 'y',
+      text: `<b>hop ${t}</b>`, showarrow: false,
+      font: { color: '#697586', size: 11 }, xanchor: 'left',
+    });
+  }
+
+  const xPad = 1.8;
+  const layout = {
+    ...layoutDark,
+    margin: { l: 20, r: 20, t: 28, b: 20 },
+    shapes: bandShapes,
+    annotations: tierAnnots,
+    xaxis: { visible: false, range: [xMin - xPad, xMax + xPad] },
+    yaxis: { visible: false, range: [-(maxTier + 0.6) * 2.0, 1.2] },
+    hovermode: 'closest',
+    showlegend: false,
+  };
+
+  Plotly.react('topoGraph',
+    [...edgeTraces, edgeLabelTrace, nodeGlow, gwGlow, nodeTrace, gwTrace],
+    layout, plotlyConfig);
+
+  const direct = (byTier[1] || []).length;
+  const multi = macs.length - direct;
+  const rage = j.routes_age;
+  const rtxt = (rage == null) ? 'routing table not polled yet'
+    : `routing table ${rage}s old`;
+  note.innerHTML =
+    (gwMac != null ? `Gateway = <b>MAC ${gwMac}</b> (this RX). ` : '') +
+    `<b>${direct}</b> direct neighbour(s), <b>${multi}</b> multi-hop · ${rtxt}. ` +
+    `Built from the gateway's <code>get routing</code> table — solid edges are ` +
+    `direct RF links, purple edges are relay hops via the listed next-hop.`;
+
+  renderNodeTables(j.node_routes || {}, gwMac);
+}
+
+// Render one routing table per device, learned from beacon [BTBL] lines.
+function renderNodeTables(nodeRoutes, gwMac) {
+  const host = $('nodeTables');
+  if (!host) return;
+  const macs = Object.keys(nodeRoutes).map(Number).sort((a, b) => a - b);
+  if (macs.length === 0) {
+    host.innerHTML =
+      '<div class="topo-note">No device routing tables received yet — ' +
+      'waiting for a beacon carrying a table.</div>';
+    return;
+  }
+  let html = '<div class="node-tbl-grid">';
+  macs.forEach(m => {
+    const info = nodeRoutes[m] || {};
+    const rts = info.routes || [];
+    const age = info.age != null ? `${info.age}s ago` : '—';
+    const gwTag = (gwMac != null && m === gwMac) ? ' <span class="gw-tag">gateway</span>' : '';
+    html += `<div class="node-tbl"><div class="node-tbl-h">MAC ${m}${gwTag}` +
+            `<span class="node-tbl-age">${age}</span></div>`;
+    if (rts.length === 0) {
+      html += '<div class="node-tbl-empty">empty table</div>';
+    } else {
+      html += '<table><thead><tr><th>dest</th><th>via</th><th>hops</th></tr></thead><tbody>';
+      rts.slice().sort((a, b) => a.dest - b.dest).forEach(rt => {
+        const relay = rt.next_hop !== rt.dest;
+        html += `<tr><td>${rt.dest}</td>` +
+                `<td>${relay ? '<span class="relay">' + rt.next_hop + '</span>' : rt.next_hop}</td>` +
+                `<td>${rt.hops}</td></tr>`;
+      });
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  host.innerHTML = html;
+}
+
+// ---- Dev / Flash (native, proxied via /api/dev/*) -----------------
+const dfState = {
+  devices: { cdc: [], dfu: [] },
+  firmwares: [],
+  selectedDev: null,
+  selectedFw: null,
+  consoleES: null,
+  jobES: null,
+  history: [],
+  histIdx: -1,
+  pollTimer: null,
+  bound: false,
+};
+
+function devflashOnEnter() {
+  if (!dfState.bound) { dfState.bound = true; dfBindOnce(); }
+  dfRefreshDevices();
+  dfRefreshFirmwares();
+  if (!dfState.pollTimer) dfState.pollTimer = setInterval(dfRefreshDevices, 4000);
+}
+function devflashOnLeave() {
+  if (dfState.pollTimer) { clearInterval(dfState.pollTimer); dfState.pollTimer = null; }
+}
+
+function dfBindOnce() {
+  $('devRefreshBtn').addEventListener('click', dfRefreshDevices);
+  $('fwRefreshBtn').addEventListener('click', dfRefreshFirmwares);
+  $('devProbeBtn').addEventListener('click', dfProbe);
+  $('flashBtn').addEventListener('click', dfFlash);
+  $('flashMethod').addEventListener('change', dfUpdateFlashBtn);
+  $('devConsoleClear').addEventListener('click', () => { $('devConsoleOut').innerHTML = ''; });
+  $('devConsoleReopen').addEventListener('click', dfReopenConsole);
+  $('devConsoleSend').addEventListener('click', dfSendConsole);
+  $('devConsoleInput').addEventListener('keydown', dfOnConsoleKey);
+}
+
+function dfEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function dfRefreshDevices() {
+  try {
+    const r = await fetch('/api/dev/devices');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    dfState.devices = await r.json();
+    dfRenderDevices();
+  } catch (e) {
+    $('devList').innerHTML = `<div class="df-empty">error: ${dfEsc(e.message)}</div>`;
+  }
+}
+
+function dfRenderDevices() {
+  const cdc = dfState.devices.cdc || [];
+  const dfu = dfState.devices.dfu || [];
+  const stm32cdc = cdc.filter(d => d.is_stm32);
+  const otherCdc = cdc.filter(d => !d.is_stm32);
+  const total = stm32cdc.length + dfu.length + otherCdc.length;
+  $('devCount').textContent = `${total} device${total !== 1 ? 's' : ''}`;
+  if (total === 0) {
+    $('devList').innerHTML = '<div class="df-empty">no USB devices found</div>';
+    $('devInfoCard').style.display = 'none';
+    if (dfState.selectedDev) { dfState.selectedDev = null; dfStopConsole(); }
+    dfUpdateFlashBtn();
+    return;
+  }
+  const items = [];
+  stm32cdc.forEach(d => items.push(dfDevCard(d, 'cdc', 'STM32 CDC')));
+  dfu.forEach(d => items.push(dfDevCard(d, 'dfu', 'DFU mode')));
+  otherCdc.forEach(d => items.push(dfDevCard(d, 'other', 'other CDC')));
+  $('devList').innerHTML = items.join('');
+  $('devList').querySelectorAll('[data-cdc]').forEach(el =>
+    el.addEventListener('click', () => dfSelectDevice(el.dataset.cdc)));
+  if (dfState.selectedDev) {
+    const still = cdc.some(d => d.device === dfState.selectedDev);
+    if (!still) {
+      dfState.selectedDev = null;
+      dfStopConsole();
+      $('devInfoCard').style.display = 'none';
+    } else {
+      dfRenderInfo();
+    }
+  }
+  dfUpdateFlashBtn();
+}
+
+function dfDevCard(d, kind, label) {
+  const sel = (kind === 'cdc' && d.device === dfState.selectedDev) ? 'selected' : '';
+  let title, meta;
+  if (kind === 'cdc' || kind === 'other') {
+    title = d.device;
+    const idstr = d.vid && d.pid ? ` ${d.vid}:${d.pid}` : '';
+    meta = `${d.product || ''}${idstr}${d.location ? ' loc=' + d.location : ''}${d.serial_number ? ' sn=' + d.serial_number : ''}`;
+  } else {
+    title = `bus${d.bus}/dev${d.device}`;
+    meta = `${d.vid}:${d.pid} ${d.desc || ''}`;
+  }
+  const attr = (kind === 'cdc') ? `data-cdc="${dfEsc(d.device)}"` : '';
+  return `<div class="dev-item ${sel}" ${attr}>
+    <div class="row1"><span class="name">${dfEsc(title)}</span>
+      <span class="df-pill ${kind}">${dfEsc(label)}</span></div>
+    <div class="meta">${dfEsc(meta)}</div>
+  </div>`;
+}
+
+function dfSelectDevice(devPath) {
+  dfState.selectedDev = devPath;
+  dfRenderDevices();
+  $('devInfoCard').style.display = '';
+  dfRenderInfo();
+  dfStartConsole(devPath);
+  dfUpdateFlashBtn();
+}
+
+function dfRenderInfo() {
+  const d = (dfState.devices.cdc || []).find(x => x.device === dfState.selectedDev);
+  if (!d) { $('devInfoCard').style.display = 'none'; return; }
+  const rows = [
+    ['Port', d.device],
+    ['VID:PID', `${d.vid}:${d.pid}`],
+    ['Product', d.product || '—'],
+    ['Manufacturer', d.manufacturer || '—'],
+    ['Serial', d.serial_number || '—'],
+    ['USB path', d.location || '—'],
+  ];
+  $('devInfo').innerHTML = rows.map(([k, v]) =>
+    `<div class="k">${dfEsc(k)}</div><div class="v">${dfEsc(v)}</div>`).join('');
+}
+
+async function dfRefreshFirmwares() {
+  try {
+    const r = await fetch('/api/dev/firmwares');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    dfState.firmwares = j.firmwares || [];
+    dfRenderFirmwares();
+  } catch (e) {
+    $('fwList').innerHTML = `<div class="df-empty">error: ${dfEsc(e.message)}</div>`;
+  }
+}
+
+function dfFmtSize(n) {
+  return n < 1024 ? `${n} B`
+       : n < 1048576 ? `${(n / 1024).toFixed(1)} KB`
+       : `${(n / 1048576).toFixed(2)} MB`;
+}
+function dfAgo(s) {
+  if (s < 60) return `${s|0}s ago`;
+  if (s < 3600) return `${(s / 60).toFixed(0)}m ago`;
+  if (s < 86400) return `${(s / 3600).toFixed(1)}h ago`;
+  return `${(s / 86400).toFixed(1)}d ago`;
+}
+
+function dfRenderFirmwares() {
+  const fw = dfState.firmwares;
+  $('fwCount').textContent = `${fw.length} bin${fw.length !== 1 ? 's' : ''}`;
+  if (!fw.length) {
+    $('fwList').innerHTML = '<div class="df-empty">no .bin files — build firmware first</div>';
+    return;
+  }
+  const now = Date.now() / 1000 | 0;
+  $('fwList').innerHTML = fw.map(f => {
+    const sel = f.path === dfState.selectedFw ? 'selected' : '';
+    const base = f.path.split('/').slice(-1)[0];
+    return `<div class="fw-item ${sel}" data-fw="${dfEsc(f.path)}">
+      <div class="row1"><span class="name">${dfEsc(f.app)}</span>
+        <span class="df-pill other">${dfEsc(base)}</span></div>
+      <div class="meta">${dfEsc(f.path)} · ${dfFmtSize(f.size)} · ${dfAgo(now - f.mtime)}</div>
+    </div>`;
+  }).join('');
+  $('fwList').querySelectorAll('[data-fw]').forEach(el =>
+    el.addEventListener('click', () => {
+      dfState.selectedFw = el.dataset.fw;
+      dfRenderFirmwares();
+      dfUpdateFlashBtn();
+    }));
+}
+
+function dfUpdateFlashBtn() {
+  const method = $('flashMethod').value;
+  const hasFw = !!dfState.selectedFw;
+  const hasDfu = (dfState.devices.dfu && dfState.devices.dfu.length > 0);
+  const ready = hasFw && ((method === 'dfu' && (!!dfState.selectedDev || hasDfu)) || method === 'swd');
+  $('flashBtn').disabled = !ready;
+  if (!hasFw) $('flashHint').textContent = 'select firmware';
+  else if (method === 'dfu' && !dfState.selectedDev && !hasDfu)
+    $('flashHint').textContent = 'select a CDC device or put board in DFU first';
+  else $('flashHint').textContent = `→ ${dfState.selectedFw} (${method})`;
+}
+
+// ---- console SSE (proxied) ----
+function dfSetConsoleStatus(s, label) {
+  $('devConsoleDot').className = 'df-dot' + (s ? ' ' + s : '');
+  $('devConsoleStatus').textContent = label;
+}
+function dfAppendConsole(cls, text, replay) {
+  const el = $('devConsoleOut');
+  const near = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  const span = document.createElement('span');
+  span.className = `l-${cls}${replay ? ' replay' : ''}`;
+  span.textContent = (cls === 'tx' ? '> ' : '') + text + '\n';
+  el.appendChild(span);
+  while (el.childNodes.length > 4000) el.removeChild(el.firstChild);
+  if (near) el.scrollTop = el.scrollHeight;
+}
+function dfStartConsole(devPath) {
+  dfStopConsole();
+  $('devConsoleLabel').textContent = devPath;
+  dfSetConsoleStatus('warn', 'connecting…');
+  $('devConsoleOut').innerHTML = '';
+  const url = `/api/dev/console/stream?device=${encodeURIComponent(devPath)}`;
+  const es = new EventSource(url);
+  dfState.consoleES = es;
+  es.onopen  = () => dfSetConsoleStatus('ok', 'connected');
+  es.onerror = () => dfSetConsoleStatus('bad', 'disconnected');
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello')      dfAppendConsole('meta', `[opened ${m.device}]`);
+    else if (m.type === 'rx')    dfAppendConsole('rx', m.text, m.replay);
+    else if (m.type === 'tx')    dfAppendConsole('tx', m.text);
+    else if (m.type === 'closed'){ dfAppendConsole('meta', '[port closed]'); dfSetConsoleStatus('bad', 'closed'); }
+    else if (m.type === 'error') dfAppendConsole('error', m.text);
+  };
+}
+function dfStopConsole() {
+  if (dfState.consoleES) { dfState.consoleES.close(); dfState.consoleES = null; }
+  dfSetConsoleStatus('', 'disconnected');
+  $('devConsoleLabel').textContent = '';
+}
+async function dfReopenConsole() {
+  if (!dfState.selectedDev) return;
+  try {
+    await fetch('/api/dev/console/close', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: dfState.selectedDev })
+    });
+  } catch {}
+  dfStartConsole(dfState.selectedDev);
+}
+async function dfSendConsole() {
+  const inp = $('devConsoleInput');
+  const text = inp.value;
+  if (!text || !dfState.selectedDev) return;
+  try {
+    await fetch('/api/dev/console/send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: dfState.selectedDev, text })
+    });
+  } catch (e) { dfAppendConsole('error', 'send failed: ' + e.message); return; }
+  dfState.history.push(text);
+  dfState.histIdx = dfState.history.length;
+  inp.value = '';
+}
+function dfOnConsoleKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); dfSendConsole(); }
+  else if (e.key === 'ArrowUp') {
+    if (dfState.histIdx > 0) { dfState.histIdx--; e.target.value = dfState.history[dfState.histIdx]; }
+    e.preventDefault();
+  } else if (e.key === 'ArrowDown') {
+    if (dfState.histIdx < dfState.history.length - 1) {
+      dfState.histIdx++; e.target.value = dfState.history[dfState.histIdx];
+    } else { dfState.histIdx = dfState.history.length; e.target.value = ''; }
+    e.preventDefault();
+  }
+}
+async function dfProbe() {
+  if (!dfState.selectedDev) return;
+  try {
+    await fetch('/api/dev/probe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device: dfState.selectedDev })
+    });
+  } catch (e) { dfAppendConsole('error', 'probe failed: ' + e.message); }
+}
+
+// ---- flash + job SSE ----
+function dfAppendJob(cls, text) {
+  const el = $('jobLog');
+  const span = document.createElement('span');
+  span.className = `l-${cls}`;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+async function dfFlash() {
+  if (!dfState.selectedFw) return;
+  const method = $('flashMethod').value;
+  const device = dfState.selectedDev || '';
+  $('jobLog').innerHTML = '';
+  $('flashBtn').disabled = true;
+  dfSetConsoleStatus('warn', 'paused for flash');
+  try {
+    const r = await fetch('/api/dev/flash', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method, firmware: dfState.selectedFw, device })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.job) throw new Error(j.error || 'flash failed to start');
+    dfStreamJob(j.job, () => {
+      setTimeout(() => {
+        dfRefreshDevices().then(() => {
+          if (dfState.selectedDev) dfStartConsole(dfState.selectedDev);
+        });
+      }, 1500);
+    });
+  } catch (e) {
+    dfAppendJob('error', 'error: ' + e.message);
+    $('flashBtn').disabled = false;
+  }
+}
+function dfStreamJob(jid, onDone) {
+  if (dfState.jobES) dfState.jobES.close();
+  const es = new EventSource(`/api/dev/job/stream?id=${jid}`);
+  dfState.jobES = es;
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello')      dfAppendJob('info', `[${m.label}]`);
+    else if (m.type === 'info')  dfAppendJob('info', m.text);
+    else if (m.type === 'log')   dfAppendJob('log', m.text);
+    else if (m.type === 'error') dfAppendJob('error', m.text);
+    else if (m.type === 'done') {
+      const cls = m.code === 0 ? 'done ok' : 'done fail';
+      dfAppendJob(cls, `[exit ${m.code}]`);
+      es.close(); dfState.jobES = null;
+      $('flashBtn').disabled = false;
+      dfUpdateFlashBtn();
+      if (onDone) onDone();
+    }
+  };
+}
+
+// ---- Target Tests (native, proxied via /api/dev/*) ----------------
+const tstState = {
+  devices: [],            // STM32 CDC only
+  selectedDevs: new Set(),
+  selectedDevsInited: false,
+  tests: [],              // [{id, class, name}]
+  classes: [],            // [{name, tests:[name]}]
+  selected: new Set(),    // selected pytest nodeids
+  jobES: null,
+  currentJob: null,
+  statusByNode: {},
+  pollTimer: null,
+  bound: false,
+};
+
+function testsOnEnter() {
+  if (!tstState.bound) { tstState.bound = true; tstBindOnce(); }
+  tstRefreshDevices();
+  if (!tstState.tests.length) tstRefreshList();
+  if (!tstState.pollTimer) tstState.pollTimer = setInterval(tstRefreshDevices, 5000);
+}
+function testsOnLeave() {
+  if (tstState.pollTimer) { clearInterval(tstState.pollTimer); tstState.pollTimer = null; }
+}
+
+function tstBindOnce() {
+  $('tstDevRefresh').addEventListener('click', tstRefreshDevices);
+  $('tstRefresh').addEventListener('click', tstRefreshList);
+  $('tstAll').addEventListener('click', () => tstSetAll(true));
+  $('tstNone').addEventListener('click', () => tstSetAll(false));
+  $('tstRunBtn').addEventListener('click', tstRun);
+  $('tstList').addEventListener('change', tstOnListChange);
+  $('tstDevList').addEventListener('change', tstOnDevChange);
+}
+
+async function tstRefreshDevices() {
+  try {
+    const r = await fetch('/api/dev/devices');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    tstState.devices = (j.cdc || []).filter(d => d.is_stm32);
+    tstRenderDevices();
+  } catch (e) {
+    $('tstDevList').innerHTML = `<div class="df-empty">error: ${dfEsc(e.message)}</div>`;
+  }
+}
+
+function tstRenderDevices() {
+  const wrap = $('tstDevList');
+  $('tstDevCount').textContent = `${tstState.devices.length} STM32`;
+  if (!tstState.devices.length) {
+    wrap.innerHTML = '<div class="df-empty">no STM32 CDC devices</div>';
+    tstState.selectedDevs.clear();
+    tstUpdateRunBtn();
+    return;
+  }
+  if (!tstState.selectedDevsInited) {
+    tstState.devices.forEach(d => tstState.selectedDevs.add(d.device));
+    tstState.selectedDevsInited = true;
+  } else {
+    const present = new Set(tstState.devices.map(d => d.device));
+    [...tstState.selectedDevs].forEach(d => { if (!present.has(d)) tstState.selectedDevs.delete(d); });
+  }
+  wrap.innerHTML = tstState.devices.map(d => {
+    const checked = tstState.selectedDevs.has(d.device) ? 'checked' : '';
+    const meta = `${d.serial_number || ''} ${d.location || ''}`.trim();
+    return `<label class="tst-dev">
+      <input type="checkbox" data-tstdev="${dfEsc(d.device)}" ${checked}>
+      <span class="name">${dfEsc(d.device)}</span>
+      <span class="meta">${dfEsc(meta)}</span>
+    </label>`;
+  }).join('');
+  tstUpdateRunBtn();
+}
+function tstOnDevChange(ev) {
+  const t = ev.target;
+  if (!t.dataset || !t.dataset.tstdev) return;
+  if (t.checked) tstState.selectedDevs.add(t.dataset.tstdev);
+  else tstState.selectedDevs.delete(t.dataset.tstdev);
+  tstUpdateRunBtn();
+}
+
+async function tstRefreshList() {
+  $('tstList').innerHTML = '<div class="df-empty">loading… (pytest --collect-only)</div>';
+  try {
+    const r = await fetch('/api/dev/tests/list');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    if (j.error) { $('tstList').innerHTML = `<div class="df-empty">${dfEsc(j.error)}</div>`; return; }
+    tstState.tests = j.tests || [];
+    tstState.classes = j.classes || [];
+    tstState.selected = new Set(tstState.tests.map(t => t.id));
+    tstRenderList();
+  } catch (e) {
+    $('tstList').innerHTML = `<div class="df-empty">error: ${dfEsc(e.message)}</div>`;
+  }
+}
+
+function tstRenderList() {
+  const wrap = $('tstList');
+  if (!tstState.classes.length) {
+    wrap.innerHTML = '<div class="df-empty">no tests collected</div>';
+    return;
+  }
+  const status = tstState.statusByNode;
+  wrap.innerHTML = tstState.classes.map(c => {
+    const items = c.tests.map(name => {
+      const id = `test_target_test.py::${c.name}::${name}`;
+      const checked = tstState.selected.has(id) ? 'checked' : '';
+      const st = status[`${c.name}::${name}`];
+      const cls = st ? st : '';
+      const badge = st ? `<span class="tst-badge ${st}">${st}</span>` : '';
+      return `<label class="tst-row ${cls}">
+        <input type="checkbox" data-tstid="${dfEsc(id)}" ${checked}>
+        ${badge}<span>${dfEsc(name)}</span>
+      </label>`;
+    }).join('');
+    const allCls = c.tests.every(n => tstState.selected.has(`test_target_test.py::${c.name}::${n}`));
+    return `<details class="tst-cls" open>
+      <summary>
+        <input type="checkbox" data-tstcls="${dfEsc(c.name)}" ${allCls ? 'checked' : ''}
+               onclick="event.stopPropagation()">
+        ${dfEsc(c.name)}
+        <span style="margin-left:auto; color:var(--muted); font-weight:500; font-size:11px;">${c.tests.length}</span>
+      </summary>
+      <div class="tst-items">${items}</div>
+    </details>`;
+  }).join('');
+  tstUpdateRunBtn();
+}
+
+function tstOnListChange(ev) {
+  const t = ev.target;
+  if (t.dataset && t.dataset.tstid) {
+    if (t.checked) tstState.selected.add(t.dataset.tstid);
+    else tstState.selected.delete(t.dataset.tstid);
+    tstUpdateRunBtn();
+    return;
+  }
+  if (t.dataset && t.dataset.tstcls) {
+    const cls = tstState.classes.find(c => c.name === t.dataset.tstcls);
+    if (!cls) return;
+    cls.tests.forEach(n => {
+      const id = `test_target_test.py::${cls.name}::${n}`;
+      if (t.checked) tstState.selected.add(id); else tstState.selected.delete(id);
+    });
+    tstRenderList();
+  }
+}
+
+function tstSetAll(on) {
+  tstState.selected = on ? new Set(tstState.tests.map(t => t.id)) : new Set();
+  tstRenderList();
+}
+
+function tstUpdateRunBtn() {
+  const ndev = tstState.selectedDevs.size;
+  const ntests = tstState.selected.size;
+  const ok = ndev > 0 && ntests > 0;
+  $('tstRunBtn').disabled = !ok;
+  $('tstRunHint').textContent = ok
+    ? `${ntests} test${ntests !== 1 ? 's' : ''} on ${ndev} device${ndev !== 1 ? 's' : ''}`
+    : 'pick devices & tests';
+}
+
+function tstAppendJob(cls, text) {
+  const el = $('tstJobLog');
+  const span = document.createElement('span');
+  let extra = '';
+  if (/PASSED/.test(text)) extra = ' l-pass';
+  else if (/FAILED|ERROR/.test(text)) extra = ' l-fail';
+  else if (/SKIPPED/.test(text)) extra = ' l-skip';
+  span.className = `l-${cls}${extra}`;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function tstRun() {
+  const ports = [...tstState.selectedDevs];
+  const test_ids = [...tstState.selected];
+  const selection = $('tstKFilter').value.trim();
+  $('tstJobLog').innerHTML = '';
+  $('tstRunBtn').disabled = true;
+  $('tstTot').textContent = '…';
+  ['tstPass','tstFail','tstErr','tstSkip'].forEach(i => $(i).textContent = '–');
+  $('tstFailures').innerHTML = '';
+  $('tstSummaryHead').textContent = 'running…';
+  tstState.statusByNode = {};
+  tstRenderList();
+  try {
+    const r = await fetch('/api/dev/tests/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ports, test_ids, selection })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.job) throw new Error(j.error || 'failed to start');
+    tstState.currentJob = j.job;
+    $('tstJobLabel').textContent = `job ${j.job}`;
+    tstStreamJob(j.job);
+  } catch (e) {
+    tstAppendJob('error', 'error: ' + e.message);
+    $('tstRunBtn').disabled = false;
+    $('tstSummaryHead').textContent = '';
+  }
+}
+
+function tstStreamJob(jid) {
+  if (tstState.jobES) tstState.jobES.close();
+  const es = new EventSource(`/api/dev/job/stream?id=${jid}`);
+  tstState.jobES = es;
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello')      tstAppendJob('info', `[${m.label}]`);
+    else if (m.type === 'info')  tstAppendJob('info', m.text);
+    else if (m.type === 'log')   tstAppendJob('log', m.text);
+    else if (m.type === 'error') tstAppendJob('error', m.text);
+    else if (m.type === 'done') {
+      tstAppendJob(m.code === 0 ? 'done ok' : 'done fail', `[exit ${m.code}]`);
+      es.close(); tstState.jobES = null;
+      $('tstRunBtn').disabled = false;
+      tstFetchResults(jid);
+    }
+  };
+}
+
+async function tstFetchResults(jid) {
+  try {
+    const r = await fetch(`/api/dev/tests/results?id=${jid}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const s = j.summary || {};
+    $('tstTot').textContent  = s.total  ?? 0;
+    $('tstPass').textContent = s.passed ?? 0;
+    $('tstFail').textContent = s.failed ?? 0;
+    $('tstErr').textContent  = s.errors ?? 0;
+    $('tstSkip').textContent = s.skipped ?? 0;
+    $('tstSummaryHead').textContent =
+      `exit ${j.exit_code} · ${(s.duration || 0).toFixed(2)}s`;
+    tstState.statusByNode = {};
+    (j.tests || []).forEach(t => { tstState.statusByNode[`${t.class}::${t.name}`] = t.status; });
+    tstRenderList();
+    const fails = (j.tests || []).filter(t => t.status === 'failed' || t.status === 'error');
+    $('tstFailures').innerHTML = fails.length === 0 ? '' :
+      fails.map(t => `<div class="tst-failure">
+        <div class="ftitle">${dfEsc(t.class)}::${dfEsc(t.name)} (${dfEsc(t.status)})</div>${dfEsc(t.message || '')}
+      </div>`).join('');
+  } catch (e) {
+    $('tstSummaryHead').textContent = 'results error: ' + e.message;
+  }
+}
+
+loadNodes().then(() => { setupRefresh(); refreshMap(); loadDevice(); });
 </script>
 </body>
 </html>

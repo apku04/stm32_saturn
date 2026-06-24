@@ -23,9 +23,11 @@
 #include "bme280.h"
 #include "sht3x.h"
 #include "flash_ota.h"
+#include "ota_apply.h"
 #include "gps.h"
 #include "ext_flash.h"
 #include "event_log.h"
+#include "version.h"
 
 uint8_t sniffer = 0;
 
@@ -118,7 +120,9 @@ static void menu(uint16_t argc, uint8_t *argv[]) {
     } else if (strcmp(cmd, "dfu") == 0) {
         jump_to_bootloader();
     } else if (strcmp(cmd, "version") == 0) {
-        print("STM32_LORA_V1\n");
+        snprintf(s, sizeof(s), "STM32_LORA_V1 %s (built %s)\n",
+                 fw_version_string(), fw_build_id_string());
+        print(s);
     } else if (strcmp(cmd, "ping") == 0) {
         ping_commands();
     } else {
@@ -292,6 +296,16 @@ static uint8_t set_commands(uint16_t argc, uint8_t *argv[]) {
             uint8_t b = strtol((const char *)argv[2], NULL, 10);
             if (b == 0 || b == 1) send_beacon_flag(b);
             print("Done\n");
+        } else if (strcmp((const char *)argv[1], "beacon_interval") == 0) {
+            uint16_t sec = (uint16_t)strtoul((const char *)argv[2], NULL, 10);
+            if (!timer_set_beacon_interval_s(sec)) {
+                print("Error: beacon_interval must be 1-255 seconds\n");
+                return 1;
+            }
+            flash_data.paramN = (uint8_t)sec;
+            if (argc >= 4 && strcmp((const char *)argv[3], "persist") == 0)
+                writeFlashParamByte(PARAMETER_N, (uint8_t)sec);
+            print("Done\n");
         } else {
             print("Unknown parameter\n");
         }
@@ -318,6 +332,9 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
         print(buf);
     } else if (strcmp((const char *)argv[1], "mac_address") == 0) {
         snprintf(buf, sizeof(buf), "MAC Address: %u\n", get_mac_address());
+        print(buf);
+    } else if (strcmp((const char *)argv[1], "beacon_interval") == 0) {
+        snprintf(buf, sizeof(buf), "Beacon Interval: %u s\n", timer_get_beacon_interval_s());
         print(buf);
     } else if (strcmp((const char *)argv[1], "uid") == 0) {
         const volatile uint8_t *p = (const volatile uint8_t *)UID_BASE;
@@ -590,6 +607,12 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
                 snprintf(buf, sizeof(buf), "OTA Pending: NO\r\n");
             }
             print(buf);
+        } else if (argc >= 3 && strcmp((const char *)argv[2], "selftest") == 0) {
+            /* Exercises the flash erase+program-from-flash+verify sequence used
+             * by the OTA applier, on a scratch bank page (no risk to the app). */
+            bool ok = ota_self_test();
+            snprintf(buf, sizeof(buf), "OTA SelfTest: %s\r\n", ok ? "PASS" : "FAIL");
+            print(buf);
         }
     } else if (strcmp((const char *)argv[1], "extflash") == 0) {
         uint32_t id = ext_flash_read_id();
@@ -638,13 +661,14 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
                 break;   /* slot empty → end of valid records */
             snprintf(buf, sizeof(buf),
                      "  [%lu] boot=%lu rst=0x%08lX last_stage=%u this_stage=%u "
-                     "up_ms=%lu reached_main=%u\n",
+                     "up_ms=%lu reached_main=%u hung_chk=%u\n",
                      (unsigned long)i,
                      (unsigned long)r.boot_count,
                      (unsigned long)r.rst_csr,
                      r.last_init_stage, r.this_init_stage,
                      (unsigned long)r.last_uptime_ms,
-                     (r.flags & 0x0001) ? 1 : 0);
+                     (r.flags & 0x0001) ? 1 : 0,
+                     r.last_main_chk);
             print(buf);
         }
     } else if (strcmp((const char *)argv[1], "i2cread") == 0 && argc >= 4) {
@@ -667,9 +691,9 @@ static void send_commands(uint16_t argc, uint8_t *argv[]) {
      *   send cfg pwr <N>           -> tx_power = N (1..22)
      *   send cfg sf  <N>           -> data_rate (SF) = N (5..12)
      *   send cfg both <pwr> <sf>   -> both
-     * Broadcast (TTL=0) like PING. Field device replies with CMD_ACK before
-     * applying. After SF change you MUST manually `set data_rate <N>` on
-     * the base or you'll stop hearing the remote. */
+     *   send cfg beacon <sec> [persist 0|1] [target|all]
+     * Broadcasts across the mesh. Beacon config is target-filtered by the
+     * receiver; target 255/all means every node applies and ACKs. */
     if (argc >= 3 && strcmp((const char *)argv[1], "cfg") == 0) {
         Packet pkt;
         memset(&pkt, 0, sizeof(Packet));
@@ -701,8 +725,24 @@ static void send_commands(uint16_t argc, uint8_t *argv[]) {
             pkt.data[1] = p;
             pkt.data[2] = s;
             pkt.length = 4 + 3;
+        } else if (argc >= 4 && strcmp(sub, "beacon") == 0) {
+            uint16_t sec = (uint16_t)strtoul((const char *)argv[3], NULL, 10);
+            uint8_t persist = (argc >= 5) ? (uint8_t)strtoul((const char *)argv[4], NULL, 10) : 0;
+            uint8_t target = BROADCAST;
+            if (argc >= 6 && strcmp((const char *)argv[5], "all") != 0)
+                target = (uint8_t)strtoul((const char *)argv[5], NULL, 10);
+            if (sec < 1u || sec > 255u || persist > 1u || target == 0) {
+                print("Error: usage: send cfg beacon <sec 1..255> [persist 0|1] [target 1..254|all]\n");
+                return;
+            }
+            pkt.data[0] = 0x10;
+            pkt.data[1] = target;
+            pkt.data[2] = persist;
+            pkt.data[3] = (uint8_t)(sec & 0xFF);
+            pkt.data[4] = (uint8_t)(sec >> 8);
+            pkt.length = 4 + 5;
         } else {
-            print("Usage: send cfg pwr <N> | send cfg sf <N> | send cfg both <pwr> <sf>\n");
+            print("Usage: send cfg pwr <N> | send cfg sf <N> | send cfg both <pwr> <sf> | send cfg beacon <sec> [persist] [target|all]\n");
             return;
         }
 
@@ -712,6 +752,91 @@ static void send_commands(uint16_t argc, uint8_t *argv[]) {
         } else {
             print("Buffer full\n");
         }
+        return;
+    }
+
+    /* OTA-over-LoRa relay. The host OTA driver drives this one step at a time;
+     * the gateway just builds the single-hop broadcast packet (see the receive
+     * side in app_incoming/ota_rx_dispatch). Wire format documented there.
+     *   send ota begin <target> <size>
+     *   send ota data  <target> <offset> <hexbytes>   (<=40 bytes, 8-aligned)
+     *   send ota end   <target> <size> <crc32hex>
+     */
+    if (argc >= 4 && strcmp((const char *)argv[1], "ota") == 0) {
+        Packet pkt;
+        memset(&pkt, 0, sizeof(Packet));
+        pkt.pOwner = NET;
+        pkt.pktDir = OUTGOING;
+
+        const char *sub = (const char *)argv[2];
+        uint8_t target = (uint8_t)strtoul((const char *)argv[3], NULL, 10);
+
+        if (strcmp(sub, "prepare") == 0 && argc >= 7) {
+            /* send ota prepare <target> <ver16> <size> <crc32hex>
+             * Payload: target(1) ver[16] size_lo size_hi crc[4] = 23 bytes */
+            const char *ver = (const char *)argv[4];
+            uint16_t size = (uint16_t)strtoul((const char *)argv[5], NULL, 10);
+            uint32_t crc  = (uint32_t)strtoul((const char *)argv[6], NULL, 16);
+            pkt.control_app = OTA_PREPARE;
+            pkt.data[0] = target;
+            memset(&pkt.data[1], 0, 16);
+            size_t vl = strlen(ver);
+            if (vl > 16) vl = 16;
+            memcpy(&pkt.data[1], ver, vl);
+            pkt.data[17] = (uint8_t)(size & 0xFF);
+            pkt.data[18] = (uint8_t)(size >> 8);
+            pkt.data[19] = (uint8_t)(crc & 0xFF);
+            pkt.data[20] = (uint8_t)((crc >> 8) & 0xFF);
+            pkt.data[21] = (uint8_t)((crc >> 16) & 0xFF);
+            pkt.data[22] = (uint8_t)((crc >> 24) & 0xFF);
+            pkt.length   = APP_HEADER_SIZE + 23;
+        } else if (strcmp(sub, "begin") == 0 && argc >= 5) {
+            uint16_t size = (uint16_t)strtoul((const char *)argv[4], NULL, 10);
+            pkt.control_app = OTA_BEGIN;
+            pkt.data[0] = target;
+            pkt.data[1] = (uint8_t)(size & 0xFF);
+            pkt.data[2] = (uint8_t)(size >> 8);
+            pkt.length  = APP_HEADER_SIZE + 3;
+        } else if (strcmp(sub, "data") == 0 && argc >= 6) {
+            uint16_t foff = (uint16_t)strtoul((const char *)argv[4], NULL, 10);
+            const char *hex = (const char *)argv[5];
+            size_t hl = strlen(hex);
+            if ((hl & 1u) || (hl / 2) > 40 || (hl / 2) == 0) {
+                print("OTA data: bad hex (1..40 bytes)\n");
+                return;
+            }
+            uint8_t len = (uint8_t)(hl / 2);
+            pkt.control_app = OTA_DATA;
+            pkt.data[0] = target;
+            pkt.data[1] = (uint8_t)(foff & 0xFF);
+            pkt.data[2] = (uint8_t)(foff >> 8);
+            pkt.data[3] = len;
+            for (uint8_t i = 0; i < len; i++) {
+                char t[3] = { hex[i * 2], hex[i * 2 + 1], '\0' };
+                pkt.data[4 + i] = (uint8_t)strtoul(t, NULL, 16);
+            }
+            pkt.length = APP_HEADER_SIZE + 4 + len;
+        } else if (strcmp(sub, "end") == 0 && argc >= 6) {
+            uint16_t size = (uint16_t)strtoul((const char *)argv[4], NULL, 10);
+            uint32_t crc  = (uint32_t)strtoul((const char *)argv[5], NULL, 16);
+            pkt.control_app = OTA_END;
+            pkt.data[0] = target;
+            pkt.data[1] = (uint8_t)(size & 0xFF);
+            pkt.data[2] = (uint8_t)(size >> 8);
+            pkt.data[3] = (uint8_t)(crc & 0xFF);
+            pkt.data[4] = (uint8_t)((crc >> 8) & 0xFF);
+            pkt.data[5] = (uint8_t)((crc >> 16) & 0xFF);
+            pkt.data[6] = (uint8_t)((crc >> 24) & 0xFF);
+            pkt.length  = APP_HEADER_SIZE + 7;
+        } else {
+            print("Usage: send ota prepare|begin|data|end ...\n");
+            return;
+        }
+
+        if (buffer_full(Ulme.pktTxBuf) != GLOB_ERROR_BUFFER_FULL)
+            write_packet(Ulme.pktTxBuf, &pkt);
+        else
+            print("Buffer full\n");
         return;
     }
 

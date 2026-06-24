@@ -15,17 +15,34 @@ static void aloha_channel_access(Packet *pkt);
 
 mlme Mlme;
 
+/* Max CSMA back-off passes before we transmit anyway. The original loop was
+ * unbounded and refreshed nothing: when the channel is sensed busy (RF
+ * congestion, or a wedged carrier-detect after the radio enters a bad state)
+ * it would spin here indefinitely, starve the 8 s IWDG, and reset the node
+ * mid-MAINCHK_MAC_OUT. Each pass below backs off a bounded, short interval
+ * (<= ~0.2 s) and refreshes the watchdog, so the worst case is a brief bounded
+ * delay followed by a forced transmit instead of a watchdog reset.
+ *
+ * Back-off magnitude is deliberately small: the original 0.4-2.2 s per pass was
+ * fine for occasional beacons but throttled OTA (≈1000 stop-and-wait fragments,
+ * each needing a data TX + ACK TX) to a multi-hour crawl. ~40-220 ms keeps
+ * CSMA collision avoidance while letting OTA fragments flow. */
+#define MAC_CSMA_MAX_BACKOFF 8
+
 static void aloha_channel_access(Packet *pkt) {
     uint16_t di = (rand() % 10 + 2);
+    IWDG_KR = IWDG_KR_REFRESH;
     delay_ms(di * 20);
 
-    uint8_t isChannelBusy = radio_get_carrier_detect_avg();
-
-    while (isChannelBusy >= 1) {
+    uint8_t attempts = 0;
+    while (radio_get_carrier_detect_avg() >= 1 &&
+           attempts < MAC_CSMA_MAX_BACKOFF) {
+        IWDG_KR = IWDG_KR_REFRESH;       /* feed watchdog before backing off */
         uint16_t d = (rand() % 10 + 2);
-        delay_ms(d * 200);
-        isChannelBusy = radio_get_carrier_detect_avg();
+        delay_ms(d * 20);
+        attempts++;
     }
+    IWDG_KR = IWDG_KR_REFRESH;
 
     transmitFrame(pkt);
 }

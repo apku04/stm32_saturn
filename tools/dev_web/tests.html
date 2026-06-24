@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saturn Dev — Target Tests</title>
+<style>
+  :root {
+    --bg:#0b1220; --panel:#0f1a2c; --panel2:#142238; --border:#1f2f4a;
+    --fg:#e6edf7; --muted:#7d8aa3; --accent:#5ab1ff; --accent2:#9be15d;
+    --warn:#ffb454; --bad:#ff6c6c; --ok:#65e3a4;
+    --mono:'JetBrains Mono','Fira Mono',Menlo,Consolas,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    font-size:14px; height:100%; }
+  body { display:flex; flex-direction:column; min-height:100vh; }
+  header { background:#08101e; padding:10px 18px; border-bottom:1px solid var(--border);
+    display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.4px; }
+  header .badge { background:var(--panel2); border:1px solid var(--border);
+    padding:2px 8px; border-radius:10px; color:var(--muted); font-size:12px; }
+  header .spacer { flex:1; }
+  header .clock { color:var(--muted); font-family:var(--mono); font-size:12px; }
+
+  main {
+    display:grid;
+    grid-template-columns: 380px 1fr;
+    gap:14px; padding:14px;
+    flex:1; min-height:0;
+  }
+  .col { display:flex; flex-direction:column; gap:14px; min-height:0; }
+  .panel { background:var(--panel); border:1px solid var(--border); border-radius:8px;
+    padding:12px 14px; min-height:0; display:flex; flex-direction:column; }
+  .panel h2 { font-size:12px; font-weight:600; text-transform:uppercase;
+    letter-spacing:1.2px; color:var(--muted); margin:0 0 10px; display:flex;
+    align-items:center; gap:8px; }
+  .panel h2 .right { margin-left:auto; }
+  button, select, input[type=text] {
+    background:var(--panel2); color:var(--fg); border:1px solid var(--border);
+    border-radius:5px; padding:5px 10px; font:inherit;
+  }
+  button { cursor:pointer; transition:background .12s, border-color .12s; }
+  button:hover:not(:disabled) { background:#1b2c4a; border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.primary { background:#1a4d83; border-color:#2e7bd6; color:#fff; }
+  button.primary:hover:not(:disabled) { background:#2563ad; }
+  .small { font-size:12px; padding:3px 7px; }
+  .muted { color:var(--muted); }
+
+  .dev-row { display:flex; align-items:center; gap:8px; padding:6px 8px;
+    border:1px solid var(--border); border-radius:5px; background:var(--panel2);
+    margin-bottom:6px; }
+  .dev-row.disabled { opacity:.5; }
+  .dev-row .name { font-family:var(--mono); font-weight:600; }
+  .dev-row .meta { color:var(--muted); font-size:11px; margin-left:auto;
+    font-family:var(--mono); }
+
+  .testlist { overflow-y:auto; flex:1; min-height:0; }
+  details.cls { border:1px solid var(--border); border-radius:5px;
+    background:var(--panel2); margin-bottom:6px; padding:4px 8px; }
+  details.cls > summary { cursor:pointer; padding:4px 0; font-weight:600;
+    font-family:var(--mono); display:flex; align-items:center; gap:6px; }
+  details.cls > summary::marker { color:var(--muted); }
+  details.cls .tests { padding:4px 0 6px 14px; display:flex; flex-direction:column; gap:3px; }
+  .test-row { display:flex; align-items:center; gap:7px; font-family:var(--mono);
+    font-size:12px; }
+  .test-row.passed { color:var(--ok); }
+  .test-row.failed { color:var(--bad); }
+  .test-row.error { color:var(--bad); }
+  .test-row.skipped { color:var(--warn); }
+  .test-row .badge-status {
+    font-size:10px; padding:1px 5px; border-radius:8px; min-width:50px; text-align:center;
+    border:1px solid var(--border); background:#0a1426;
+  }
+  .badge-status.passed { color:var(--ok); border-color:var(--ok); }
+  .badge-status.failed { color:var(--bad); border-color:var(--bad); }
+  .badge-status.error { color:var(--bad); border-color:var(--bad); }
+  .badge-status.skipped { color:var(--warn); border-color:var(--warn); }
+
+  .joblog {
+    background:#050a14; color:#cfe1f5; border:1px solid var(--border);
+    border-radius:6px; font-family:var(--mono); font-size:12px;
+    padding:8px 10px; flex:1; min-height:200px; overflow-y:auto;
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .joblog .l-info { color:var(--accent); }
+  .joblog .l-error { color:var(--bad); }
+  .joblog .l-done.ok { color:var(--ok); }
+  .joblog .l-done.fail { color:var(--bad); }
+  .joblog .l-pass { color:var(--ok); }
+  .joblog .l-fail { color:var(--bad); }
+  .joblog .l-skip { color:var(--warn); }
+
+  .summary { display:grid; grid-template-columns:repeat(5, 1fr); gap:8px;
+    margin-bottom:8px; }
+  .stat { background:var(--panel2); border:1px solid var(--border);
+    border-radius:5px; padding:8px; text-align:center; }
+  .stat .num { font-size:22px; font-weight:600; font-family:var(--mono); }
+  .stat .lbl { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; }
+  .stat.pass .num { color:var(--ok); }
+  .stat.fail .num { color:var(--bad); }
+  .stat.err .num { color:var(--bad); }
+  .stat.skip .num { color:var(--warn); }
+
+  .failure-block { background:#1a0e0e; border:1px solid #6c1f1f;
+    border-radius:5px; padding:8px 10px; margin-top:8px; font-family:var(--mono);
+    font-size:11px; white-space:pre-wrap; overflow-x:auto; }
+  .failure-block .ftitle { color:var(--bad); font-weight:700; margin-bottom:4px; }
+
+  .label { color:var(--muted); font-size:11px; text-transform:uppercase;
+    letter-spacing:1px; margin:8px 0 4px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .placeholder { color:var(--muted); font-size:13px; padding:10px;
+    border:1px dashed var(--border); border-radius:6px; text-align:center; }
+
+  @media (max-width: 1000px) {
+    main { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Saturn Dev Dashboard</h1>
+  <span class="badge">pi5-jenkins</span>
+  <span class="badge muted">development</span>
+  <nav style="display:flex; gap:6px; margin-left:14px;">
+    <a href="/" style="color:var(--muted); text-decoration:none; padding:4px 10px; border-radius:5px; background:var(--panel); border:1px solid var(--border);">Devices &amp; Flash</a>
+    <a href="/tests" style="color:var(--accent); text-decoration:none; padding:4px 10px; border-radius:5px; background:var(--panel2); border:1px solid var(--accent);">Target Tests</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="clock" id="clock">--:--:--</span>
+  <button class="small" onclick="refreshAll()">↻ Refresh</button>
+</header>
+
+<main>
+  <!-- LEFT -->
+  <div class="col">
+    <section class="panel" style="flex:0 0 auto;">
+      <h2>Devices
+        <span class="right muted" id="devCount"></span>
+      </h2>
+      <div id="devList">
+        <div class="placeholder">scanning…</div>
+      </div>
+      <div class="muted" style="font-size:11px; margin-top:6px;">
+        Most tests need 1 device; the <code>TestDeviceCommunication*</code> classes need 2.
+        Pytest will use these via <code>SERIAL_PORTS</code>.
+      </div>
+    </section>
+
+    <section class="panel" style="flex:1; min-height:0;">
+      <h2>Tests
+        <span class="right">
+          <button class="small" onclick="setAll(true)">Select all</button>
+          <button class="small" onclick="setAll(false)">None</button>
+        </span>
+      </h2>
+      <div class="row" style="margin-bottom:8px;">
+        <input type="text" id="kFilter" placeholder="optional pytest -k expression"
+               style="flex:1;">
+      </div>
+      <div class="testlist" id="testList">
+        <div class="placeholder">loading…</div>
+      </div>
+    </section>
+
+    <section class="panel" style="flex:0 0 auto;">
+      <h2>Run</h2>
+      <div class="row">
+        <button class="primary" id="runBtn" onclick="runTests()" disabled>▶ Run selected</button>
+        <span class="muted" id="runHint">pick devices &amp; tests</span>
+      </div>
+      <div class="muted" style="font-size:11px; margin-top:6px;">
+        Closes any open console for the selected devices, runs pytest with
+        <code>SERIAL_PORTS</code>, and writes JUnit XML.
+      </div>
+    </section>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="col">
+    <section class="panel" style="flex:0 0 auto;">
+      <h2>Summary
+        <span class="right muted" id="summaryHead"></span>
+      </h2>
+      <div class="summary">
+        <div class="stat"><div class="num" id="sTot">–</div><div class="lbl">Total</div></div>
+        <div class="stat pass"><div class="num" id="sPass">–</div><div class="lbl">Passed</div></div>
+        <div class="stat fail"><div class="num" id="sFail">–</div><div class="lbl">Failed</div></div>
+        <div class="stat err"><div class="num" id="sErr">–</div><div class="lbl">Errors</div></div>
+        <div class="stat skip"><div class="num" id="sSkip">–</div><div class="lbl">Skipped</div></div>
+      </div>
+      <div id="failures"></div>
+    </section>
+
+    <section class="panel" style="flex:1; min-height:0;">
+      <h2>Output
+        <span class="right muted" id="jobLabel"></span>
+      </h2>
+      <div class="joblog" id="jobLog"><span class="muted">no run yet</span></div>
+    </section>
+  </div>
+</main>
+
+<script>
+const state = {
+  devices: [],          // STM32 CDC devices
+  selectedDevs: new Set(),
+  tests: [],            // [{id, class, name}]
+  classes: [],          // [{name, tests:[name]}]
+  selected: new Set(),  // selected nodeids
+  jobES: null,
+  currentJob: null,
+};
+const $ = id => document.getElementById(id);
+function tick(){ $('clock').textContent = new Date().toLocaleTimeString(); }
+setInterval(tick,1000); tick();
+
+async function refreshDevices(){
+  const r = await fetch('/api/devices');
+  const j = await r.json();
+  state.devices = (j.cdc || []).filter(d => d.is_stm32);
+  renderDevices();
+}
+
+function renderDevices(){
+  const wrap = $('devList');
+  $('devCount').textContent = `${state.devices.length} STM32 found`;
+  if (!state.devices.length){
+    wrap.innerHTML = '<div class="placeholder">no STM32 CDC devices</div>';
+    state.selectedDevs.clear();
+    updateRunBtn();
+    return;
+  }
+  // Auto-select all on first load
+  if (state.selectedDevs.size === 0){
+    state.devices.forEach(d => state.selectedDevs.add(d.device));
+  }
+  wrap.innerHTML = state.devices.map(d => {
+    const checked = state.selectedDevs.has(d.device) ? 'checked' : '';
+    const meta = `${d.serial_number || ''} ${d.location || ''}`.trim();
+    return `<label class="dev-row">
+      <input type="checkbox" ${checked} onchange="toggleDev('${d.device}',this.checked)">
+      <span class="name">${d.device}</span>
+      <span class="meta">${meta}</span>
+    </label>`;
+  }).join('');
+  updateRunBtn();
+}
+
+function toggleDev(dev, on){
+  if (on) state.selectedDevs.add(dev); else state.selectedDevs.delete(dev);
+  updateRunBtn();
+}
+
+async function refreshTests(){
+  $('testList').innerHTML = '<div class="placeholder">loading…</div>';
+  try {
+    const r = await fetch('/api/tests/list');
+    const j = await r.json();
+    if (j.error){ $('testList').innerHTML = `<div class="placeholder">${j.error}</div>`; return; }
+    state.tests = j.tests || [];
+    state.classes = j.classes || [];
+    // default: all selected
+    state.selected = new Set(state.tests.map(t => t.id));
+    renderTests({});
+  } catch (e){
+    $('testList').innerHTML = `<div class="placeholder">error: ${e}</div>`;
+  }
+}
+
+function renderTests(statusByNode){
+  const wrap = $('testList');
+  if (!state.classes.length){
+    wrap.innerHTML = '<div class="placeholder">no tests collected</div>';
+    return;
+  }
+  wrap.innerHTML = state.classes.map(c => {
+    const items = c.tests.map(name => {
+      const id = `test_target_test.py::${c.name}::${name}`;
+      const checked = state.selected.has(id) ? 'checked' : '';
+      const st = statusByNode[`${c.name}::${name}`];
+      const cls = st ? st : '';
+      const badge = st
+        ? `<span class="badge-status ${st}">${st}</span>`
+        : '';
+      return `<label class="test-row ${cls}">
+        <input type="checkbox" ${checked} onchange="toggleTest('${id}',this.checked)">
+        ${badge}
+        <span>${name}</span>
+      </label>`;
+    }).join('');
+    const allCls = c.tests.every(n => state.selected.has(
+      `test_target_test.py::${c.name}::${n}`));
+    return `<details class="cls" open>
+      <summary>
+        <input type="checkbox" ${allCls?'checked':''}
+               onchange="toggleClass('${c.name}',this.checked)"
+               onclick="event.stopPropagation()">
+        ${c.name}
+        <span class="muted" style="margin-left:auto; font-weight:400; font-size:11px;">${c.tests.length}</span>
+      </summary>
+      <div class="tests">${items}</div>
+    </details>`;
+  }).join('');
+  updateRunBtn();
+}
+
+function toggleTest(id, on){
+  if (on) state.selected.add(id); else state.selected.delete(id);
+  updateRunBtn();
+}
+function toggleClass(cls, on){
+  state.classes.find(c=>c.name===cls).tests.forEach(n => {
+    const id = `test_target_test.py::${cls}::${n}`;
+    if (on) state.selected.add(id); else state.selected.delete(id);
+  });
+  renderTests({});
+}
+function setAll(on){
+  state.selected = on ? new Set(state.tests.map(t=>t.id)) : new Set();
+  renderTests({});
+}
+
+function updateRunBtn(){
+  const ndev = state.selectedDevs.size;
+  const ntests = state.selected.size;
+  const ok = ndev > 0 && ntests > 0;
+  $('runBtn').disabled = !ok;
+  $('runHint').textContent = ok
+    ? `${ntests} test${ntests!==1?'s':''} on ${ndev} device${ndev!==1?'s':''}`
+    : 'pick devices & tests';
+}
+
+async function runTests(){
+  const ports = [...state.selectedDevs];
+  const test_ids = [...state.selected];
+  const selection = $('kFilter').value.trim();
+  $('jobLog').innerHTML = '';
+  $('runBtn').disabled = true;
+  $('sTot').textContent = '…';
+  ['sPass','sFail','sErr','sSkip'].forEach(i=>$(i).textContent='–');
+  $('failures').innerHTML = '';
+  $('summaryHead').textContent = 'running…';
+  try {
+    const r = await fetch('/api/tests/run', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ports, test_ids, selection})});
+    const j = await r.json();
+    if (!r.ok || !j.job) throw new Error(j.error || 'failed to start');
+    state.currentJob = j.job;
+    $('jobLabel').textContent = `job ${j.job}`;
+    streamJob(j.job);
+  } catch(e){
+    appendJob('error', `error: ${e.message}`);
+    $('runBtn').disabled = false;
+  }
+}
+
+function appendJob(cls, text){
+  const el = $('jobLog');
+  const span = document.createElement('span');
+  let extra = '';
+  if (text.match(/PASSED/)) extra = ' l-pass';
+  else if (text.match(/FAILED|ERROR/)) extra = ' l-fail';
+  else if (text.match(/SKIPPED/)) extra = ' l-skip';
+  span.className = `l-${cls}${extra}`;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+function streamJob(jid){
+  if (state.jobES) state.jobES.close();
+  const es = new EventSource(`/api/job/stream?id=${jid}`);
+  state.jobES = es;
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello') appendJob('info', `[${m.label}]`);
+    else if (m.type === 'info') appendJob('info', m.text);
+    else if (m.type === 'log') appendJob('log', m.text);
+    else if (m.type === 'error') appendJob('error', m.text);
+    else if (m.type === 'done') {
+      appendJob(m.code===0?'done ok':'done fail', `[exit ${m.code}]`);
+      es.close(); state.jobES = null;
+      $('runBtn').disabled = false;
+      fetchResults(jid);
+    }
+  };
+}
+
+async function fetchResults(jid){
+  try {
+    const r = await fetch(`/api/tests/results?id=${jid}`);
+    const j = await r.json();
+    const s = j.summary || {};
+    $('sTot').textContent  = s.total ?? 0;
+    $('sPass').textContent = s.passed ?? 0;
+    $('sFail').textContent = s.failed ?? 0;
+    $('sErr').textContent  = s.errors ?? 0;
+    $('sSkip').textContent = s.skipped ?? 0;
+    $('summaryHead').textContent = `exit ${j.exit_code} · ${(s.duration||0).toFixed(2)}s`;
+
+    // Update test rows with status
+    const statusByNode = {};
+    (j.tests||[]).forEach(t => { statusByNode[`${t.class}::${t.name}`] = t.status; });
+    renderTests(statusByNode);
+
+    // Failures
+    const fails = (j.tests||[]).filter(t => t.status === 'failed' || t.status === 'error');
+    $('failures').innerHTML = fails.length === 0 ? '' :
+      fails.map(t => `<div class="failure-block">
+        <div class="ftitle">${t.class}::${t.name} (${t.status})</div>${escapeHtml(t.message||'')}
+      </div>`).join('');
+  } catch(e){
+    $('summaryHead').textContent = `results error: ${e}`;
+  }
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+}
+
+function refreshAll(){ refreshDevices(); refreshTests(); }
+refreshAll();
+setInterval(refreshDevices, 5000);
+</script>
+</body>
+</html>

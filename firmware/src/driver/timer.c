@@ -15,6 +15,7 @@ volatile uint32_t difsTimer   = 0;
 volatile uint32_t ackTimer    = 0;
 volatile uint32_t slotTimer   = 0;
 static volatile uint32_t beaconTimer = 0;
+static volatile uint32_t beacon_interval_ms = 10000;
 
 static cb_timer beacon_cb    = 0;
 static uint8_t  beacon_cb_en = 0;
@@ -40,8 +41,7 @@ void timer_poll(void)
         ackTimer++;
         beaconTimer++;
 
-        /* Beacon callback every 10 seconds */
-        if (beacon_cb_en && beaconTimer >= 10000) {
+        if (beacon_cb_en && beaconTimer >= beacon_interval_ms) {
             if (beacon_cb)
                 beacon_cb();
             beaconTimer = 0;
@@ -67,4 +67,18 @@ void register_timer_cb(cb_timer cb)
 uint32_t get_tick_ms(void)
 {
     return monotonic_ms;
+}
+
+uint16_t timer_get_beacon_interval_s(void)
+{
+    return (uint16_t)(beacon_interval_ms / 1000u);
+}
+
+uint8_t timer_set_beacon_interval_s(uint16_t seconds)
+{
+    if (seconds < 1u || seconds > 255u)
+        return 0;
+    beacon_interval_ms = (uint32_t)seconds * 1000u;
+    beaconTimer = 0;
+    return 1;
 }

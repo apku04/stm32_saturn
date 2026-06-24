@@ -11,11 +11,7 @@
 #include "flash_ota.h"
 #include "globalInclude.h"
 #include "stm32u0.h"
-
-/* Config page address (matches flash_config.c) */
-#define CONFIG_PAGE_ADDR  0x0801F800UL
-#define CONFIG_PAGE_NUM   63
-#define CONFIG_SLOT_COUNT ((int)UID_FINGERPRINT + 1)
+#include "flash_config.h"
 
 #define FLASH_SR_CLEAR_FLAGS \
     (FLASH_SR_EOP | (1u << 1) | (1u << 3) | (1u << 4) | \
@@ -46,39 +42,6 @@ static void flash_wait(void)
 static void flash_clear_status(void)
 {
     FLASH_SR = FLASH_SR_CLEAR_FLAGS;
-}
-
-/* ---- Config-page slot helpers (1 byte per 8-byte double-word) ---- */
-
-static uint8_t config_slot_read(addrEnum slot)
-{
-    volatile uint32_t *addr =
-        (volatile uint32_t *)(CONFIG_PAGE_ADDR + (uint32_t)slot * 8);
-    uint32_t val = addr[0];
-    return (val == 0xFFFFFFFF) ? 0xFF : (uint8_t)(val & 0xFF);
-}
-
-static void config_slot_write(addrEnum slot, uint8_t value)
-{
-    volatile uint32_t *addr =
-        (volatile uint32_t *)(CONFIG_PAGE_ADDR + (uint32_t)slot * 8);
-
-    flash_unlock();
-    flash_wait();
-    flash_clear_status();
-
-    if (addr[0] != 0xFFFFFFFF)
-        goto out;
-
-    FLASH_CR |= FLASH_CR_PG;
-    addr[0] = (uint32_t)value;
-    addr[1] = 0xFFFFFFFF;
-    flash_wait();
-    FLASH_SR = FLASH_SR_EOP;
-    FLASH_CR &= ~FLASH_CR_PG;
-
-out:
-    flash_lock();
 }
 
 /* ---- Public: bank info ---- */
@@ -165,70 +128,38 @@ void ota_read(uint32_t offset, uint8_t *buf, uint32_t len)
         buf[i] = src[i];
 }
 
-/* ---- Public: pending flag ---- */
+/* ---- Public: pending flag ----
+ *
+ * Stored in the device-config page (page 63) via flash_config's
+ * writeFlashParamByte/readFlash. We deliberately reuse that API rather than a
+ * parallel writer: writeFlashParamByte rewrites *all* config slots on every
+ * call (erased slots become the double-word 0x000000FF), so a "write only if
+ * still 0xFFFFFFFF" approach silently fails after any other parameter has been
+ * persisted. The read-modify-erase-rewrite path always succeeds. */
 
 void ota_set_pending(uint16_t image_size)
 {
-    if (config_slot_read(OTA_PENDING_FLAG) != 0xFF ||
-        config_slot_read(OTA_IMAGE_SIZE_LO) != 0xFF ||
-        config_slot_read(OTA_IMAGE_SIZE_HI) != 0xFF) {
-        ota_clear_pending();
-    }
-
-    config_slot_write(OTA_PENDING_FLAG,  0x01);
-    config_slot_write(OTA_IMAGE_SIZE_LO, (uint8_t)(image_size & 0xFF));
-    config_slot_write(OTA_IMAGE_SIZE_HI, (uint8_t)((image_size >> 8) & 0xFF));
+    writeFlashParamByte(OTA_IMAGE_SIZE_LO, (uint8_t)(image_size & 0xFF));
+    writeFlashParamByte(OTA_IMAGE_SIZE_HI, (uint8_t)((image_size >> 8) & 0xFF));
+    writeFlashParamByte(OTA_PENDING_FLAG,  0x01);   /* set last: commit point */
 }
 
 void ota_clear_pending(void)
 {
-    /* Clearing requires erasing the entire config page and rewriting
-     * all other parameters.  We read current config, wipe, rewrite. */
-    uint8_t params[CONFIG_SLOT_COUNT];
-    for (int i = 0; i < CONFIG_SLOT_COUNT; i++)
-        params[i] = config_slot_read((addrEnum)i);
-
-    flash_unlock();
-    flash_wait();
-    flash_clear_status();
-
-    /* Erase config page */
-    FLASH_CR = FLASH_CR_PER | ((uint32_t)CONFIG_PAGE_NUM << 3);
-    FLASH_CR |= FLASH_CR_STRT;
-    flash_wait();
-    FLASH_CR &= ~FLASH_CR_PER;
-    FLASH_SR = FLASH_SR_EOP;
-
-    /* Rewrite only the original parameters (OTA slots stay erased = 0xFF) */
-    FLASH_CR |= FLASH_CR_PG;
-    for (int i = 0; i < CONFIG_SLOT_COUNT; i++) {
-        if (i == (int)OTA_PENDING_FLAG ||
-            i == (int)OTA_IMAGE_SIZE_LO ||
-            i == (int)OTA_IMAGE_SIZE_HI)
-            continue;
-        if (params[i] == 0xFF)
-            continue; /* skip erased slots */
-        volatile uint32_t *addr =
-            (volatile uint32_t *)(CONFIG_PAGE_ADDR + (uint32_t)i * 8);
-        addr[0] = (uint32_t)params[i];
-        addr[1] = 0xFFFFFFFF;
-        flash_wait();
-        FLASH_SR = FLASH_SR_EOP;
-    }
-    FLASH_CR &= ~FLASH_CR_PG;
-
-    flash_lock();
+    writeFlashParamByte(OTA_PENDING_FLAG, 0x00);
 }
 
 bool ota_is_pending(uint16_t *image_size)
 {
-    uint8_t flag = config_slot_read(OTA_PENDING_FLAG);
+    uint8_t flag = 0xFF;
+    readFlash(OTA_PENDING_FLAG, &flag);
     if (flag != 0x01)
         return false;
 
     if (image_size) {
-        uint8_t lo = config_slot_read(OTA_IMAGE_SIZE_LO);
-        uint8_t hi = config_slot_read(OTA_IMAGE_SIZE_HI);
+        uint8_t lo = 0, hi = 0;
+        readFlash(OTA_IMAGE_SIZE_LO, &lo);
+        readFlash(OTA_IMAGE_SIZE_HI, &hi);
         *image_size = (uint16_t)lo | ((uint16_t)hi << 8);
     }
     return true;
