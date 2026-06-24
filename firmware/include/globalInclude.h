@@ -16,6 +16,11 @@
 #define BUFFER_SIZE           8
 #define PACKET_SIZE           70
 #define PACKET_BUFFER_SIZE    10
+/* App-layer payload bytes carried in Packet.data[] (after the 12-byte header).
+ * Sized to fit the largest OTA DATA fragment: 4 control bytes (target, offset,
+ * len) + OTA_CHUNK(192) = 196. Beacons/routing/other traffic use far less.
+ * Defined here (before the Packet struct) so the struct can use it. */
+#define DATA_LEN              200
 #define SIGNAL_STRENGTH_THRESHOLD -100
 #define BROADCAST             255
 
@@ -117,7 +122,7 @@ typedef struct __attribute__((__packed__)) {
     uint8_t  mesh_src;          /* 9 */
     uint8_t  control_app;       /* 10 */
     uint8_t  length;            /* 11 */
-    uint8_t  data[50];
+    uint8_t  data[DATA_LEN];
 } Packet;
 
 /* ---- Packet buffer ---- */
@@ -134,7 +139,7 @@ typedef struct {
 #define MAC_HEADER_SIZE     3
 #define PACKET_HEADER_SIZE  (MAC_HEADER_SIZE + NET_HEADER_SIZE + APP_HEADER_SIZE)
 #define META_DATA_SIZE      3
-#define DATA_LEN            50
+/* DATA_LEN defined near the top (before the Packet struct). */
 #define BUFFER_DATA_SIZE    (META_DATA_SIZE + PACKET_HEADER_SIZE + DATA_LEN)
 
 #define TRUE  1

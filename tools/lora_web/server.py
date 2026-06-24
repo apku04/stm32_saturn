@@ -45,7 +45,7 @@ REPO_ROOT = os.path.abspath(
 
 # OTA-over-LoRa transfer parameters (must satisfy the firmware receive path:
 # fragments are 8-byte aligned and <= 40 bytes — see ota_rx_dispatch in main.c).
-OTA_CHUNK = 40
+OTA_CHUNK = 192   # 8-byte aligned; fits firmware Packet.data[DATA_LEN]/relay cmd buffer
 OTA_MAX_IMAGE = 62 * 1024
 OTA_PREPARE_TIMEOUT = 35.0   # includes ~31 pages * ~100ms erase time
 OTA_DATA_TIMEOUT = 8.0   # must exceed worst-case MAC CSMA back-off (~2.2s each

@@ -12,7 +12,7 @@ typedef struct {
     PacketBuffer *pktTxBuf;
 } ulme;
 
-void terminal(uint8_t *msg, uint8_t size);
+void terminal(uint8_t *msg, uint16_t size);
 void user_layer_init(PacketBuffer *pTxBuf);
 void print_routing_table(void);
 

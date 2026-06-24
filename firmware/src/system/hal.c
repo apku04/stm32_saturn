@@ -14,7 +14,7 @@ void recieveMode(void) {
 }
 
 GLOB_RET transmitFrame(Packet *pkt) {
-    uint8_t payload[70];
+    uint8_t payload[PACKET_HEADER_SIZE + DATA_LEN];
     uint8_t tx_len = pkt->length;
     if (tx_len > sizeof(payload)) tx_len = sizeof(payload);
     memcpy(payload, (uint8_t *)pkt + offsetof(Packet, destination_adr), tx_len);

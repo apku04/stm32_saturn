@@ -428,10 +428,10 @@ static void receive_packet(void) {
     pkt.length = payload[14];
 
     if (pkt.mesh_tbl_entries > 16) pkt.mesh_tbl_entries = 0;
-    if (pkt.length > receivedCount || pkt.length > 70) return;
+    if (pkt.length > receivedCount || pkt.length > (PACKET_HEADER_SIZE + DATA_LEN)) return;
 
     uint8_t data_size = pkt.length - PACKET_HEADER_SIZE;
-    if (data_size < 50) {
+    if (data_size <= DATA_LEN) {
         memcpy(pkt.data, &payload[15], data_size);
         if (GLOB_ERROR_BUFFER_FULL != buffer_full(pktRxBuf))
             write_packet(pktRxBuf, &pkt);

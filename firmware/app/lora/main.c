@@ -158,13 +158,14 @@ static void usb_rx_handler(uint8_t *data, uint16_t len) {
      * (e.g. `send ota data <t> <off> <80 hex>` ≈ 100 chars) arrives in several
      * callbacks. Accumulate bytes here until a line terminator, then dispatch
      * the whole line — otherwise long commands are split and mis-parsed. */
-    static uint8_t line[128];   /* matches terminal()'s MAX_ARGV input limit */
+    static uint8_t line[480];   /* matches terminal()'s MAX_ARGV input limit
+                                 * (holds an OTA DATA relay with a 192B chunk) */
     static uint16_t pos = 0;
     for (uint16_t i = 0; i < len; i++) {
         uint8_t c = data[i];
         if (c == '\n' || c == '\r') {
             if (pos > 0) {
-                terminal(line, (uint8_t)pos);
+                terminal(line, pos);
                 pos = 0;
             }
         } else if (pos < sizeof(line) - 1) {

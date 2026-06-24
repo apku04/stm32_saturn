@@ -30,9 +30,20 @@ mlme Mlme;
 #define MAC_CSMA_MAX_BACKOFF 8
 
 static void aloha_channel_access(Packet *pkt) {
-    uint16_t di = (rand() % 10 + 2);
+    /* An OTA transfer is hundreds of fragments sent back-to-back; the random
+     * pre-TX delay below (tuned for sporadic beacons) would dominate the
+     * transfer time. Skip it for OTA frames — carrier-sense + bounded back-off
+     * still provide collision avoidance. */
+    uint8_t is_ota = (pkt->control_app == OTA_PREPARE ||
+                      pkt->control_app == OTA_BEGIN ||
+                      pkt->control_app == OTA_DATA ||
+                      pkt->control_app == OTA_END ||
+                      pkt->control_app == OTA_ACK);
     IWDG_KR = IWDG_KR_REFRESH;
-    delay_ms(di * 20);
+    if (!is_ota) {
+        uint16_t di = (rand() % 10 + 2);
+        delay_ms(di * 20);
+    }
 
     uint8_t attempts = 0;
     while (radio_get_carrier_detect_avg() >= 1 &&

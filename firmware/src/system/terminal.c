@@ -31,7 +31,11 @@
 
 uint8_t sniffer = 0;
 
-#define MAX_ARGV 128
+/* Command line buffer. Must hold the longest command — an OTA DATA relay
+ * "send ota data <t> <off> <hex>" with a 192-byte chunk is ~408 chars of hex
+ * plus the prefix. 480 leaves margin. (argv[] is oversized to match, which is
+ * harmless — far more slots than any command has tokens.) */
+#define MAX_ARGV 480
 
 static uint16_t parseArgs(uint8_t *str, uint8_t *argv[]);
 static void help_command(void);
@@ -54,7 +58,7 @@ static uint8_t beacon_flag_val = 1;
 void send_beacon_flag(uint8_t flag) { beacon_flag_val = flag; }
 uint8_t get_beacon_flag(void) { return beacon_flag_val; }
 
-void terminal(uint8_t *msg, uint8_t size) {
+void terminal(uint8_t *msg, uint16_t size) {
     uint8_t cmdStr[MAX_ARGV];
     uint8_t *argv[MAX_ARGV];
     uint16_t argc;
@@ -801,8 +805,8 @@ static void send_commands(uint16_t argc, uint8_t *argv[]) {
             uint16_t foff = (uint16_t)strtoul((const char *)argv[4], NULL, 10);
             const char *hex = (const char *)argv[5];
             size_t hl = strlen(hex);
-            if ((hl & 1u) || (hl / 2) > 40 || (hl / 2) == 0) {
-                print("OTA data: bad hex (1..40 bytes)\n");
+            if ((hl & 1u) || (hl / 2) > 192 || (hl / 2) == 0) {
+                print("OTA data: bad hex (1..192 bytes)\n");
                 return;
             }
             uint8_t len = (uint8_t)(hl / 2);
