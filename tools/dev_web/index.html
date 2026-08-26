@@ -136,6 +136,14 @@
   .joblog .l-done.ok { color:var(--ok); }
   .joblog .l-done.fail { color:var(--bad); }
 
+  /* OTA progress */
+  .progress-bar { background:#050a14; border:1px solid var(--border);
+    border-radius:6px; height:8px; overflow:hidden; margin:8px 0; }
+  .progress-fill { height:100%; width:0%; border-radius:6px;
+    background:linear-gradient(90deg,var(--accent2),var(--accent));
+    transition:width .25s ease; }
+  #otaTarget { width:76px; }
+
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   .muted { color:var(--muted); }
   .label { color:var(--muted); font-size:11px; text-transform:uppercase;
@@ -221,15 +229,25 @@
     </section>
 
     <section class="panel">
-      <h2>OTA Update <span class="right muted">(future work)</span></h2>
-      <div class="placeholder">
-        OTA upload over LoRa is not yet wired up.<br>
-        UI placeholder reserved here.
+      <h2>OTA Update <span class="right muted" id="otaStateBadge"></span></h2>
+      <div class="row" style="margin-bottom:8px;">
+        <label class="muted">Relay via:</label>
+        <span class="muted" id="otaDevLabel" style="font-family:var(--mono);">no device selected</span>
       </div>
-      <div class="row" style="margin-top:8px;">
-        <button class="small" disabled title="Not implemented">Upload .bin</button>
-        <button class="small" disabled>Trigger OTA</button>
+      <div class="row" style="margin-bottom:8px;">
+        <label class="muted">Target node:</label>
+        <input type="text" id="otaTarget" placeholder="e.g. 44" inputmode="numeric">
       </div>
+      <div class="row">
+        <button class="primary" id="otaBtn" onclick="startOta()" disabled>Start OTA</button>
+        <span class="muted" id="otaHint">select a device + firmware</span>
+      </div>
+      <div class="progress-bar" id="otaBar" style="display:none;">
+        <div class="progress-fill" id="otaFill"></div>
+      </div>
+      <div class="muted" id="otaProgressText" style="font-size:11px; margin-bottom:6px;"></div>
+      <div class="label">Log</div>
+      <div class="joblog" id="otaLog"><span class="muted">no OTA run yet</span></div>
     </section>
   </div>
 
@@ -272,6 +290,11 @@ const state = {
   jobES: null,
   history: [],
   histIdx: -1,
+  otaRunning: false,
+  otaPollTimer: null,
+  otaLogSeen: 0,
+  otaLogStarted: false,
+  otaFinalPrinted: false,
 };
 
 //---------------- helpers --------------
@@ -373,6 +396,7 @@ function selectDevice(devPath) {
   renderInfoPanel();
   startConsole(devPath);
   updateFlashBtn();
+  updateOtaBtn();
 }
 
 function renderInfoPanel() {
@@ -416,7 +440,7 @@ function renderFirmwares() {
     const sel = f.path === state.selectedFw ? 'selected' : '';
     return `<div class="fw ${sel}" onclick="selectFw('${f.path}')">
       <div class="name">${f.app} <span class="muted">(${f.path.split('/').slice(-1)[0]})</span></div>
-      <div class="meta">${f.path} · ${fmtSize(f.size)} · ${ago(now - f.mtime)}</div>
+      <div class="meta">${f.build_id || 'unknown'} · ${fmtSize(f.size)} · ${ago(now - f.mtime)}</div>
     </div>`;
   }).join('');
 }
@@ -425,6 +449,7 @@ function selectFw(path) {
   state.selectedFw = path;
   renderFirmwares();
   updateFlashBtn();
+  updateOtaBtn();
 }
 
 function updateFlashBtn() {
@@ -587,10 +612,126 @@ function streamJob(jid, onDone) {
   es.onerror = () => { /* will reconnect or end */ };
 }
 
+//---------------- OTA -------------------
+document.addEventListener('input', e => {
+  if (e.target.id === 'otaTarget') updateOtaBtn();
+});
+
+function updateOtaBtn() {
+  $('otaDevLabel').textContent = state.selectedDev || 'no device selected';
+  const target = parseInt($('otaTarget').value, 10);
+  const targetOk = Number.isInteger(target) && target >= 1 && target <= 254;
+  const ready = !!state.selectedDev && !!state.selectedFw && targetOk && !state.otaRunning;
+  $('otaBtn').disabled = !ready;
+  if (state.otaRunning) {
+    $('otaHint').textContent = 'transfer in progress…';
+  } else if (!state.selectedDev) {
+    $('otaHint').textContent = 'select a device (console panel)';
+  } else if (!state.selectedFw) {
+    $('otaHint').textContent = 'select firmware';
+  } else if (!targetOk) {
+    $('otaHint').textContent = 'enter a target node id (1-254)';
+  } else {
+    $('otaHint').textContent = `→ node ${target} via ${state.selectedDev}`;
+  }
+}
+
+function appendOtaLog(cls, text) {
+  const el = $('otaLog');
+  if (!state.otaLogStarted) { el.innerHTML = ''; state.otaLogStarted = true; }
+  const span = document.createElement('span');
+  span.className = `l-${cls}`;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function startOta() {
+  const target = parseInt($('otaTarget').value, 10);
+  if (!state.selectedDev || !state.selectedFw || !Number.isInteger(target)) return;
+  $('otaLog').innerHTML = '';
+  state.otaLogStarted = false;
+  $('otaBtn').disabled = true;
+  $('otaStateBadge').textContent = 'starting…';
+  try {
+    const r = await fetch('/api/ota/start', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({device: state.selectedDev, target, firmware: state.selectedFw})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'failed to start OTA');
+    state.otaRunning = true;
+    $('otaBar').style.display = '';
+    pollOtaStatus();
+  } catch (e) {
+    appendOtaLog('error', `error: ${e.message}`);
+    $('otaStateBadge').textContent = '';
+    updateOtaBtn();
+  }
+}
+
+function renderOtaStatus(ota) {
+  if (!ota) return;
+  state.otaRunning = (ota.state === 'running');
+  const badges = {running:'running', done:'done', error:'error',
+                   up_to_date:'up to date'};
+  $('otaStateBadge').textContent = badges[ota.state] || ota.state;
+  $('otaStateBadge').className = 'right ' +
+    (ota.state === 'done' ? '' : ota.state === 'error' ? 'muted' : 'muted');
+  if (ota.chunks > 0) {
+    $('otaBar').style.display = '';
+    const pct = Math.min(100, Math.round(100 * ota.sent_chunks / ota.chunks));
+    $('otaFill').style.width = pct + '%';
+    $('otaProgressText').textContent =
+      `${ota.sent_chunks}/${ota.chunks} chunks · ${fmtSize(ota.sent_bytes)}/${fmtSize(ota.total)} · ` +
+      `${ota.retries} retr${ota.retries===1?'y':'ies'} · crc=${ota.crc}`;
+  }
+  const seen = state.otaLogSeen || 0;
+  const log = ota.log || [];
+  for (let i = seen; i < log.length; i++) {
+    const cls = /timeout|nak|rejected|fail/i.test(log[i].msg) ? 'error' : 'info';
+    appendOtaLog(cls, log[i].msg);
+  }
+  state.otaLogSeen = log.length;
+  if (ota.state !== 'running') {
+    const cls = ota.state === 'done' ? 'done ok'
+              : ota.state === 'up_to_date' ? 'done ok' : 'done fail';
+    if (!state.otaFinalPrinted) {
+      appendOtaLog(cls, `[${ota.state}]${ota.error ? ' ' + ota.error : ''}`);
+      state.otaFinalPrinted = true;
+    }
+    updateOtaBtn();
+  }
+}
+
+async function pollOtaStatus() {
+  if (state.otaPollTimer) clearTimeout(state.otaPollTimer);
+  try {
+    const r = await fetch('/api/ota/status');
+    const j = await r.json();
+    if (j.ota) renderOtaStatus(j.ota);
+  } catch (e) { /* transient — keep polling */ }
+  if (state.otaRunning) {
+    state.otaPollTimer = setTimeout(pollOtaStatus, 700);
+  }
+}
+
 //---------------- boot -----------------
 refreshDevices();
 refreshFirmwares();
 setInterval(refreshDevices, 4000);
+updateOtaBtn();
+// Resume showing a job that was already running (e.g. page reload mid-transfer).
+(async () => {
+  try {
+    const r = await fetch('/api/ota/status');
+    const j = await r.json();
+    if (j.ota) {
+      state.otaLogSeen = 0;
+      state.otaFinalPrinted = false;
+      renderOtaStatus(j.ota);
+      if (j.ota.state === 'running') pollOtaStatus();
+    }
+  } catch (e) { /* dev_web not up yet */ }
+})();
 </script>
 </body>
 </html>

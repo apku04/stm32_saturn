@@ -32,6 +32,7 @@ import sys
 import threading
 import time
 import uuid
+import zlib
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
@@ -177,11 +178,13 @@ class ConsoleSession:
             text = raw.decode("utf-8", errors="replace")
             # split into lines but keep partial for next read
             self._partial += text
-            # Inject newline before any [RX]/[BEACON] marker (firmware can
-            # interleave prints — same fix as in lora_web/server.py).
+            # Inject newline before any [RX]/[BEACON]/[BTBL]/[OTA_ACK] marker
+            # (firmware can interleave prints — same fix as in lora_web/server.py).
             self._partial = (self._partial
                              .replace("[RX]", "\n[RX]")
-                             .replace("[BEACON]", "\n[BEACON]"))
+                             .replace("[BEACON]", "\n[BEACON]")
+                             .replace("[BTBL]", "\n[BTBL]")
+                             .replace("[OTA_ACK]", "\n[OTA_ACK]"))
             while "\n" in self._partial:
                 line, self._partial = self._partial.split("\n", 1)
                 line = line.rstrip("\r")
@@ -341,6 +344,14 @@ class JobManager:
 
 
 # ---------------------------------------------------------------- Firmware
+def _extract_build_id(data: bytes) -> str:
+    """Scan a firmware binary for the SATVER magic tag written by version.c
+    (see firmware/src/system/version.c — the tag is the only copy of the
+    build_id string, kept alive against --gc-sections)."""
+    m = re.search(rb'\x00SATVER:([^\x00]{1,16})', data)
+    return m.group(1).decode('ascii', errors='replace') if m else 'unknown'
+
+
 def list_firmwares() -> list[dict]:
     """Find candidate .bin firmwares in the repo."""
     out = []
@@ -357,13 +368,243 @@ def list_firmwares() -> list[dict]:
             if os.path.isfile(cand):
                 st = os.stat(cand)
                 rel = os.path.relpath(cand, REPO_ROOT)
+                try:
+                    with open(cand, "rb") as f:
+                        build_id = _extract_build_id(f.read())
+                except Exception:
+                    build_id = "unknown"
                 out.append({
                     "app": app,
                     "path": rel,
                     "size": st.st_size,
                     "mtime": int(st.st_mtime),
+                    "build_id": build_id,
                 })
     return out
+
+
+# ---------------------------------------------------------------- OTA-over-LoRa
+# Drives the wireless firmware-update protocol (PREPARE/DATA/END, stop-and-wait
+# ARQ) through an already-open ConsoleSession, the same way a human would type
+# `send ota ...` relay commands — just automated, with retries and progress.
+# Mirrors tools/lora_web/server.py's ota_driver(); kept independent because
+# lora_web owns one dedicated serial reader thread per process while dev_web
+# multiplexes several devices through ConsoleSession/ConsoleManager instead.
+
+OTA_CHUNK = 192   # 8-byte aligned; must match firmware Packet.data[]/relay buf
+OTA_MAX_IMAGE = 62 * 1024
+OTA_PREPARE_TIMEOUT = 35.0   # includes ~31 pages * ~100ms erase time
+OTA_DATA_TIMEOUT = 8.0       # must exceed worst-case MAC CSMA back-off both ways
+OTA_END_TIMEOUT = 10.0
+OTA_MAX_RETRY = 10
+
+# OTA op codes in ACK packets (must match firmware OTA_OP_* defines)
+OTA_OP_PREPARE = 0
+OTA_OP_BEGIN   = 1
+OTA_OP_DATA    = 2
+OTA_OP_END     = 3
+
+# PREPARE NACK reason codes (must match firmware OTA_PREPARE_* defines)
+OTA_PREPARE_OK         = 0
+OTA_PREPARE_SAME_VER   = 1
+OTA_PREPARE_TOO_LARGE  = 2
+OTA_PREPARE_BUSY       = 3
+OTA_PREPARE_ERASE_FAIL = 4
+
+OTA_ACK_RE = re.compile(
+    r"\[OTA_ACK\]\s+from=(\d+)\s+op=(\d+)\s+status=(\d+)\s+off=(\d+)", re.I)
+
+
+def parse_ota_ack(line: str):
+    m = OTA_ACK_RE.search(line)
+    if not m:
+        return None
+    return {"from": int(m.group(1)), "op": int(m.group(2)),
+            "status": int(m.group(3)), "off": int(m.group(4))}
+
+
+class OtaState:
+    """Single active OTA job (this is a one-engineer dev tool — one transfer
+    at a time is the expected usage, same as the Flash panel's one job)."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._job = None
+
+    def active(self) -> bool:
+        with self._lock:
+            return self._job is not None and self._job["state"] == "running"
+
+    def start(self, device, target, firmware, total, chunks, crc):
+        now = time.time()
+        with self._lock:
+            self._job = {
+                "device": device, "target": int(target), "firmware": firmware,
+                "state": "running", "total": int(total), "chunks": int(chunks),
+                "sent_chunks": 0, "sent_bytes": 0, "retries": 0,
+                "crc": "%08x" % crc, "started": now, "updated": now,
+                "error": None, "log": [],
+            }
+
+    def log(self, msg):
+        with self._lock:
+            if self._job is not None:
+                self._job["log"].append({"ts": time.time(), "msg": msg})
+                self._job["log"] = self._job["log"][-200:]
+                self._job["updated"] = time.time()
+
+    def progress(self, sent_chunks, sent_bytes):
+        with self._lock:
+            if self._job is not None:
+                self._job["sent_chunks"] = sent_chunks
+                self._job["sent_bytes"] = sent_bytes
+                self._job["updated"] = time.time()
+
+    def bump_retry(self):
+        with self._lock:
+            if self._job is not None:
+                self._job["retries"] += 1
+
+    def finish(self, state, error=None):
+        with self._lock:
+            if self._job is not None:
+                self._job["state"] = state
+                self._job["error"] = error
+                self._job["updated"] = time.time()
+
+    def status(self):
+        with self._lock:
+            return json.loads(json.dumps(self._job)) if self._job else None
+
+
+def ota_driver(srv: "DevServer", device: str, target: int, fw_path: str, fw_name: str):
+    """Push a firmware image to `target` over LoRa, relayed through `device`.
+
+    Protocol: PREPARE (handshake + version check + bank erase) -> DATA... -> END.
+    Runs in its own thread; reads ACKs off the device's live ConsoleSession
+    (the same stream the web console/SSE tails), so the console panel shows
+    the whole exchange while it runs.
+    """
+    try:
+        with open(fw_path, "rb") as f:
+            data = f.read()
+    except Exception as e:
+        srv.ota.start(device, target, fw_name, 0, 0, 0)
+        srv.ota.finish("error", f"cannot read firmware: {e}")
+        return
+
+    size = len(data)
+    if size == 0 or size > OTA_MAX_IMAGE:
+        srv.ota.start(device, target, fw_name, size, 0, 0)
+        srv.ota.finish("error", f"image size {size} out of range (1..{OTA_MAX_IMAGE})")
+        return
+
+    crc = zlib.crc32(data) & 0xFFFFFFFF
+    nchunks = (size + OTA_CHUNK - 1) // OTA_CHUNK
+    build_id = _extract_build_id(data)
+    srv.ota.start(device, target, fw_name, size, nchunks, crc)
+    srv.ota.log(
+        f"image {fw_name}: ver={build_id!r} size={size} crc={crc:08x} "
+        f"chunks={nchunks} -> node {target}"
+    )
+
+    try:
+        sess = srv.consoles.open(device)
+    except Exception as e:
+        srv.ota.finish("error", f"cannot open console on {device}: {e}")
+        return
+
+    q = sess.subscribe()
+    try:
+        def wait_ack(op, off, timeout):
+            deadline = time.time() + timeout
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                try:
+                    msg = q.get(timeout=remaining)
+                except queue.Empty:
+                    return None
+                if msg.get("type") != "rx":
+                    continue
+                ack = parse_ota_ack(msg.get("text", ""))
+                if ack and ack["op"] == op and (off is None or ack["off"] == off):
+                    return ack
+
+        def step(cmd, op, off, timeout, label):
+            """Send cmd and wait for matching ACK; retry up to OTA_MAX_RETRY times."""
+            for attempt in range(OTA_MAX_RETRY):
+                sess.send(cmd)
+                ack = wait_ack(op, off, timeout)
+                if ack is None:
+                    srv.ota.bump_retry()
+                    srv.ota.log(f"{label}: timeout (try {attempt + 1}/{OTA_MAX_RETRY})")
+                    continue
+                if ack["status"] != 0:
+                    srv.ota.bump_retry()
+                    srv.ota.log(f"{label}: nak status={ack['status']} (try {attempt + 1})")
+                    continue
+                return True
+            return False
+
+        # ---- Phase 1: PREPARE — handshake, version check, bank erase ----
+        # Custom loop (not `step`) because status=OTA_PREPARE_SAME_VER is a
+        # clean "already up to date" exit, not a retriable error.
+        prepare_cmd = f"send ota prepare {target} {build_id} {size} {crc:08x}"
+        prepare_ok = False
+        for attempt in range(OTA_MAX_RETRY):
+            sess.send(prepare_cmd)
+            ack = wait_ack(OTA_OP_PREPARE, None, OTA_PREPARE_TIMEOUT)
+            if ack is None:
+                srv.ota.bump_retry()
+                srv.ota.log(f"prepare: timeout (try {attempt + 1}/{OTA_MAX_RETRY})")
+                continue
+            if ack["status"] == OTA_PREPARE_SAME_VER:
+                srv.ota.log(f"prepare: node {target} already running {build_id!r}")
+                srv.ota.finish("up_to_date", f"node {target} already on {build_id!r}")
+                return
+            if ack["status"] != OTA_PREPARE_OK:
+                reason = {
+                    OTA_PREPARE_TOO_LARGE:  "image too large for OTA bank",
+                    OTA_PREPARE_BUSY:       "node already in OTA mode",
+                    OTA_PREPARE_ERASE_FAIL: "flash erase failed on node",
+                }.get(ack["status"], f"unknown reason (status={ack['status']})")
+                srv.ota.bump_retry()
+                srv.ota.log(f"prepare: rejected — {reason} (try {attempt + 1})")
+                continue
+            prepare_ok = True
+            break
+
+        if not prepare_ok:
+            srv.ota.finish("error", "prepare failed (node unreachable or rejected)")
+            return
+        srv.ota.log(f"prepare ok — node {target} erased bank, entering OTA RX mode")
+
+        # ---- Phase 2: DATA — stop-and-wait ARQ ----
+        off = 0
+        idx = 0
+        while off < size:
+            chunk = data[off:off + OTA_CHUNK]
+            pad = (-len(chunk)) % 8   # flash writes are 8-byte aligned
+            payload = chunk + (b"\xff" * pad)
+            cmd = f"send ota data {target} {off} {payload.hex()}"
+            if not step(cmd, OTA_OP_DATA, off, OTA_DATA_TIMEOUT, f"data@{off}"):
+                srv.ota.finish("error", f"data@{off} failed after retries")
+                return
+            off += len(chunk)
+            idx += 1
+            srv.ota.progress(idx, off)
+
+        # ---- Phase 3: END — CRC validation on target ----
+        if not step(f"send ota end {target} {size} {crc:08x}", OTA_OP_END, None,
+                    OTA_END_TIMEOUT, "end"):
+            srv.ota.finish("error", "end failed (crc mismatch on target or no ack)")
+            return
+
+        srv.ota.log("transfer complete — target validating CRC and rebooting to apply")
+        srv.ota.finish("done")
+    finally:
+        sess.unsubscribe(q)
 
 
 # ---------------------------------------------------------------- Tests
@@ -454,6 +695,7 @@ class DevServer:
     def __init__(self):
         self.consoles = ConsoleManager()
         self.jobs = JobManager()
+        self.ota = OtaState()
 
 
 def _sse_format(msg: dict) -> bytes:
@@ -524,6 +766,9 @@ def make_handler(srv: DevServer):
                 if u.path == "/api/firmwares":
                     self._json({"firmwares": list_firmwares()})
                     return
+                if u.path == "/api/ota/status":
+                    self._json({"ota": srv.ota.status(), "now": int(time.time())})
+                    return
                 if u.path == "/api/console/stream":
                     device = q.get("device", [""])[0]
                     if not device:
@@ -586,11 +831,8 @@ def make_handler(srv: DevServer):
                 if u.path == "/api/tests/run":
                     self._do_tests_run(body)
                     return
-                if u.path == "/api/ota":
-                    self._json({
-                        "error": "OTA upload not yet implemented",
-                        "hint": "Reserved for future work — UI placeholder only.",
-                    }, 501)
+                if u.path == "/api/ota/start":
+                    self._do_ota_start(body)
                     return
                 self.send_error(404)
             except Exception as e:
@@ -715,6 +957,39 @@ def make_handler(srv: DevServer):
             srv.jobs.add(job)
             job.start()
             self._json({"job": job.id})
+
+        # --- OTA-over-LoRa ---
+        def _do_ota_start(self, body):
+            device = body.get("device", "")
+            firmware = body.get("firmware", "")   # repo-relative path, from /api/firmwares
+            try:
+                target = int(body.get("target"))
+            except (TypeError, ValueError):
+                self._json({"error": "target required"}, 400); return
+            if not device:
+                self._json({"error": "device required"}, 400); return
+            if target < 1 or target > 254:
+                self._json({"error": "target must be 1-254"}, 400); return
+
+            chosen = None
+            for f in list_firmwares():
+                if firmware in (f["path"], f["app"]):
+                    chosen = f
+                    break
+            if chosen is None:
+                self._json({"error": "unknown firmware"}, 400); return
+
+            if srv.ota.active():
+                self._json({"error": "an OTA is already running"}, 409); return
+
+            abs_fw = os.path.join(REPO_ROOT, chosen["path"])
+            threading.Thread(
+                target=ota_driver,
+                args=(srv, device, target, abs_fw, chosen["path"]),
+                daemon=True,
+            ).start()
+            self._json({"ok": True, "device": device, "target": target,
+                        "firmware": chosen["path"], "size": chosen["size"]})
 
         # --- target tests (pytest) ---
         def _do_tests_run(self, body):
