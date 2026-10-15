@@ -52,6 +52,7 @@ TEST_DIR = os.path.join(FIRMWARE_DIR, "app", "lora", "test")
 STATIC_DIR = os.path.dirname(os.path.abspath(__file__))
 INDEX_HTML = os.path.join(STATIC_DIR, "index.html")
 TESTS_HTML = os.path.join(STATIC_DIR, "tests.html")
+CONFIG_HTML = os.path.join(STATIC_DIR, "config.html")
 JUNIT_DIR = "/tmp/dev_web_junit"
 os.makedirs(JUNIT_DIR, exist_ok=True)
 
@@ -126,6 +127,10 @@ class ConsoleSession:
         self._closed = threading.Event()
         self._buf = deque(maxlen=self.BUFLEN)   # recent lines for replay
         self._partial = ""
+        self._line_hooks: list = []   # fn(line: str), called for every RX line
+
+    def add_line_hook(self, fn):
+        self._line_hooks.append(fn)
 
     # --- lifecycle -----------------------------------------------------
     def open(self):
@@ -192,6 +197,11 @@ class ConsoleSession:
                     continue
                 self._buf.append(line)
                 self._broadcast({"type": "rx", "text": line})
+                for fn in self._line_hooks:
+                    try:
+                        fn(line)
+                    except Exception:
+                        pass
 
     # --- subscribers ---------------------------------------------------
     def subscribe(self) -> queue.Queue:
@@ -224,15 +234,21 @@ class ConsoleSession:
 
 
 class ConsoleManager:
-    def __init__(self):
+    def __init__(self, on_line=None):
         self._sessions: dict[str, ConsoleSession] = {}
         self._lock = threading.Lock()
+        # Optional (device, line) callback, wired to every session's reader
+        # thread — lets NodeRegistry build its node/routing view for free off
+        # the same lines the console panel already streams, no extra traffic.
+        self._on_line = on_line
 
     def get(self, device: str) -> ConsoleSession:
         with self._lock:
             s = self._sessions.get(device)
             if s is None:
                 s = ConsoleSession(device)
+                if self._on_line is not None:
+                    s.add_line_hook(lambda line, d=device: self._on_line(d, line))
                 self._sessions[device] = s
             return s
 
@@ -525,7 +541,9 @@ def ota_driver(srv: "DevServer", device: str, target: int, fw_path: str, fw_name
                     msg = q.get(timeout=remaining)
                 except queue.Empty:
                     return None
-                if msg.get("type") != "rx":
+                # Skip replayed history from the console ring buffer — a stale
+                # ack from a PREVIOUS transfer must never satisfy this wait.
+                if msg.get("type") != "rx" or msg.get("replay"):
                     continue
                 ack = parse_ota_ack(msg.get("text", ""))
                 if ack and ack["op"] == op and (off is None or ack["off"] == off):
@@ -603,6 +621,305 @@ def ota_driver(srv: "DevServer", device: str, target: int, fw_path: str, fw_name
 
         srv.ota.log("transfer complete — target validating CRC and rebooting to apply")
         srv.ota.finish("done")
+    finally:
+        sess.unsubscribe(q)
+
+
+# ---------------------------------------------------------------- Node registry
+# Builds the "nodes I can see / are in the routing table" view for the Config
+# panel purely by parsing the same [RX]/[BEACON]/[BTBL]/[CFGOTA_ACK] lines the
+# console panel already streams — no extra firmware traffic. Field formats are
+# all "key=value" tokens (see beaconHandler/app_incoming in main.c), so one
+# generic key=value scan covers every beacon version instead of hard-coding
+# each one's field layout.
+KV_LINE_RE = re.compile(r"^\[(RX|BEACON|BTBL|CFGOTA_ACK)\]\s*(.*)$")
+KV_RE = re.compile(r"(\w+)=(-?\d+)")
+ROUTE_ENTRY_RE = re.compile(r"(\d+)>(\d+):(\d+)")
+
+
+class NodeRegistry:
+    """Nodes seen (or referenced in a routing table) on an open console,
+    keyed by (device, mac) — each relay's view of the mesh stays separate."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._nodes: dict[tuple[str, int], dict] = {}
+        self._last_src: dict[str, int] = {}   # device -> mac of the last [RX]
+
+    def _touch(self, device: str, mac: int) -> dict:
+        key = (device, mac)
+        n = self._nodes.get(key)
+        if n is None:
+            n = {"mac": mac, "rssi": None, "snr": None, "tx_pwr": None,
+                 "sf": None, "routing": [], "seen_direct": False}
+            self._nodes[key] = n
+        n["last_seen"] = time.time()
+        return n
+
+    def ingest(self, device: str, line: str):
+        m = KV_LINE_RE.match(line)
+        if not m:
+            return
+        tag, rest = m.group(1), m.group(2)
+        kv = {k: int(v) for k, v in KV_RE.findall(rest)}
+
+        with self._lock:
+            if tag == "RX":
+                mac = kv.get("src")
+                if not mac or mac in (0, 255):
+                    return
+                n = self._touch(device, mac)
+                n["seen_direct"] = True
+                if "rssi" in kv: n["rssi"] = kv["rssi"]
+                if "snr" in kv: n["snr"] = kv["snr"]
+                if "sf" in kv: n["sf"] = kv["sf"]
+                self._last_src[device] = mac
+
+            elif tag == "BEACON":
+                mac = self._last_src.get(device)   # [BEACON] always follows its [RX]
+                if not mac:
+                    return
+                n = self._touch(device, mac)
+                if "tx_pwr" in kv: n["tx_pwr"] = kv["tx_pwr"]
+                if "sf" in kv: n["sf"] = kv["sf"]
+
+            elif tag == "BTBL":
+                mac = kv.get("src")
+                if not mac:
+                    return
+                n = self._touch(device, mac)
+                entries = [{"dest": int(d), "next_hop": int(nh), "hops": int(h)}
+                           for d, nh, h in ROUTE_ENTRY_RE.findall(rest)]
+                n["routing"] = entries
+                for e in entries:
+                    if e["dest"] not in (0, 255):
+                        self._touch(device, e["dest"])
+                    if e["next_hop"] not in (0, 255):
+                        self._touch(device, e["next_hop"])
+
+            elif tag == "CFGOTA_ACK":
+                mac = kv.get("from")
+                if not mac:
+                    return
+                n = self._touch(device, mac)
+                n["last_cfgota_ack"] = {"op": kv.get("op"), "status": kv.get("status"),
+                                        "ts": time.time()}
+
+    def list(self, device: str) -> list[dict]:
+        now = time.time()
+        with self._lock:
+            out = []
+            for (d, mac), n in self._nodes.items():
+                if d != device:
+                    continue
+                row = dict(n)
+                row["age_s"] = round(now - n["last_seen"], 1)
+                out.append(row)
+        out.sort(key=lambda r: r["mac"])
+        return out
+
+
+# ---------------------------------------------------------------- OTA-over-LoRa CONFIGURATION
+# Drives the rollback-safe remote-config protocol (see CFG_OTA_* in main.c /
+# cfg_ota_rx_dispatch): PREPARE (handshake) -> DATA (values, ack'd received)
+# -> END (commit trigger) -> target reboots into the new settings as
+# provisional -> target pings its last-heard-from peer to verify the link
+# survived -> a final CFGOTA_ACK RESULT reports VERIFIED or ROLLBACK.
+# Mirrors ota_driver()'s shape (retry a bounded number of times per step,
+# read acks off the live ConsoleSession) with one difference: the final
+# RESULT ack can take a while (reboot + up to 5 verify-ping attempts), so
+# that wait uses a much longer timeout and no retry of END itself.
+
+CFGOTA_OP_PREPARE = 0
+CFGOTA_OP_DATA    = 1
+CFGOTA_OP_END     = 2
+CFGOTA_OP_RESULT  = 3
+
+CFGOTA_STATUS_OK        = 0
+CFGOTA_STATUS_BUSY      = 1
+CFGOTA_STATUS_BAD_SIZE  = 2
+CFGOTA_STATUS_BAD_VALUE = 3
+CFGOTA_STATUS_CRC_FAIL  = 4
+CFGOTA_STATUS_ROLLBACK  = 5
+CFGOTA_STATUS_VERIFIED  = 6
+
+CFGOTA_STEP_TIMEOUT   = 6.0     # PREPARE/DATA/END are single packets, quick both ways
+CFGOTA_STEP_RETRY     = 5
+# Target waits CFG_OTA_VERIFY_SETTLE_MS then up to CFG_OTA_VERIFY_MAX_TRIES
+# attempts, CFG_OTA_VERIFY_TIMEOUT_MS apart (see main.c) — 2 + 5*4 = 22s
+# worst case; give it real margin since it includes an actual reboot.
+CFGOTA_RESULT_TIMEOUT = 35.0
+
+CFGOTA_ACK_RE = re.compile(
+    r"\[CFGOTA_ACK\]\s+from=(\d+)\s+op=(\d+)\s+status=(\d+)", re.I)
+
+
+def parse_cfgota_ack(line: str):
+    m = CFGOTA_ACK_RE.search(line)
+    if not m:
+        return None
+    return {"from": int(m.group(1)), "op": int(m.group(2)), "status": int(m.group(3))}
+
+
+class CfgOtaState:
+    """Single active config-OTA job — same one-at-a-time model as OtaState."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._job = None
+
+    def active(self) -> bool:
+        with self._lock:
+            return self._job is not None and self._job["state"] == "running"
+
+    def start(self, device, target, tx_pwr, sf, beacon_s):
+        now = time.time()
+        with self._lock:
+            self._job = {
+                "device": device, "target": int(target),
+                "tx_pwr": int(tx_pwr), "sf": int(sf), "beacon_s": int(beacon_s),
+                "state": "running", "stage": "handshake",
+                "started": now, "updated": now, "error": None, "log": [],
+            }
+
+    def stage(self, stage):
+        with self._lock:
+            if self._job is not None:
+                self._job["stage"] = stage
+                self._job["updated"] = time.time()
+
+    def log(self, msg):
+        with self._lock:
+            if self._job is not None:
+                self._job["log"].append({"ts": time.time(), "msg": msg})
+                self._job["log"] = self._job["log"][-200:]
+                self._job["updated"] = time.time()
+
+    def finish(self, state, error=None):
+        with self._lock:
+            if self._job is not None:
+                self._job["state"] = state
+                self._job["error"] = error
+                self._job["updated"] = time.time()
+
+    def status(self):
+        with self._lock:
+            return json.loads(json.dumps(self._job)) if self._job else None
+
+
+def cfgota_driver(srv: "DevServer", device: str, target: int,
+                  tx_pwr: int, sf: int, beacon_s: int):
+    """Push a radio/beacon config to `target` over LoRa, relayed through
+    `device`. Runs in its own thread; reads acks off the device's live
+    ConsoleSession, same as ota_driver()."""
+    srv.cfgota.start(device, target, tx_pwr, sf, beacon_s)
+    srv.cfgota.log(f"config push -> node {target}: tx_pwr={tx_pwr} sf={sf} beacon_s={beacon_s}")
+
+    try:
+        sess = srv.consoles.open(device)
+    except Exception as e:
+        srv.cfgota.finish("error", f"cannot open console on {device}: {e}")
+        return
+
+    q = sess.subscribe()
+    try:
+        def wait_ack(op, timeout):
+            deadline = time.time() + timeout
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                try:
+                    msg = q.get(timeout=remaining)
+                except queue.Empty:
+                    return None
+                # Skip replayed history from the console ring buffer — a stale
+                # ack from a PREVIOUS config push must never satisfy this wait
+                # (all cfgota acks share the same 4 op codes across every run,
+                # so without this a fresh job could "succeed" instantly off a
+                # leftover ack from an earlier push).
+                if msg.get("type") != "rx" or msg.get("replay"):
+                    continue
+                ack = parse_cfgota_ack(msg.get("text", ""))
+                if ack and ack["from"] == target and ack["op"] == op:
+                    return ack
+
+        def step(cmd, op, label, busy_is_success=False):
+            for attempt in range(CFGOTA_STEP_RETRY):
+                sess.send(cmd)
+                ack = wait_ack(op, CFGOTA_STEP_TIMEOUT)
+                if ack is None:
+                    srv.cfgota.log(f"{label}: timeout (try {attempt + 1}/{CFGOTA_STEP_RETRY})")
+                    continue
+                if ack["status"] != CFGOTA_STATUS_OK:
+                    # A BUSY reply on a retry almost always means OUR OWN earlier
+                    # attempt already landed and only its ack got lost over the
+                    # air (normal for CSMA broadcast, no radio-level unicast ack)
+                    # — this tool runs one job at a time, so nothing else could
+                    # have put the node in that state. Treat it as success rather
+                    # than spinning retries against a target that's already there.
+                    if busy_is_success and ack["status"] == CFGOTA_STATUS_BUSY and attempt > 0:
+                        srv.cfgota.log(f"{label}: node already past this step "
+                                       "(earlier ack lost) — proceeding")
+                        return True
+                    reason = {
+                        CFGOTA_STATUS_BUSY: "node busy (OTA in progress?)",
+                        CFGOTA_STATUS_BAD_SIZE: "bad payload size",
+                        CFGOTA_STATUS_BAD_VALUE: "value out of range",
+                        CFGOTA_STATUS_CRC_FAIL: "CRC mismatch",
+                    }.get(ack["status"], f"status={ack['status']}")
+                    srv.cfgota.log(f"{label}: rejected — {reason} (try {attempt + 1})")
+                    if ack["status"] == CFGOTA_STATUS_BAD_VALUE:
+                        return False   # not retriable — the value itself is invalid
+                    continue
+                return True
+            return False
+
+        # ---- Phase 1: PREPARE — handshake ----
+        srv.cfgota.stage("handshake")
+        if not step(f"send cfgota prepare {target}", CFGOTA_OP_PREPARE, "prepare",
+                    busy_is_success=True):
+            srv.cfgota.finish("error", "prepare failed (node unreachable, busy, or rejected)")
+            return
+        srv.cfgota.log(f"prepare ok — node {target} ready for config data")
+
+        # ---- Phase 2: DATA — the actual values, ack'd as fully received ----
+        srv.cfgota.stage("transmitting")
+        data_cmd = f"send cfgota data {target} {tx_pwr} {sf} {beacon_s}"
+        if not step(data_cmd, CFGOTA_OP_DATA, "data"):
+            srv.cfgota.finish("error", "data rejected or timed out")
+            return
+        srv.cfgota.log("data ok — target confirmed all bytes received")
+
+        # ---- Phase 3: END — commit trigger, independent CRC check ----
+        srv.cfgota.stage("committing")
+        payload = bytes([tx_pwr, sf, beacon_s & 0xFF, (beacon_s >> 8) & 0xFF])
+        crc = zlib.crc32(payload) & 0xFFFFFFFF
+        if not step(f"send cfgota end {target} {crc:08x}", CFGOTA_OP_END, "end",
+                    busy_is_success=True):
+            srv.cfgota.finish("error", "commit rejected (crc mismatch or no ack)")
+            return
+        srv.cfgota.log("commit ok — target applying as PROVISIONAL and rebooting")
+
+        # ---- Phase 4: wait for the post-reboot RESULT (verified/rolled back) ----
+        srv.cfgota.stage("rebooting_verifying")
+        srv.cfgota.log("waiting for target to reboot and self-verify the link "
+                       "(ping/pong against its last-heard-from peer)…")
+        result = wait_ack(CFGOTA_OP_RESULT, CFGOTA_RESULT_TIMEOUT)
+        if result is None:
+            srv.cfgota.finish(
+                "unknown",
+                "no RESULT heard within timeout — target may still be verifying, "
+                "or the new settings made it unreachable on this relay")
+            return
+        if result["status"] == CFGOTA_STATUS_VERIFIED:
+            srv.cfgota.log(f"node {target} verified the link — configuration committed")
+            srv.cfgota.finish("done")
+        elif result["status"] == CFGOTA_STATUS_ROLLBACK:
+            srv.cfgota.log(f"node {target} could not verify the link — rolled back "
+                           "to its previous settings")
+            srv.cfgota.finish("rolled_back", "link verify failed; previous config restored")
+        else:
+            srv.cfgota.finish("error", f"unexpected RESULT status={result['status']}")
     finally:
         sess.unsubscribe(q)
 
@@ -693,9 +1010,11 @@ def parse_junit(jid: str, job: "Job") -> dict:
 # ---------------------------------------------------------------- HTTP
 class DevServer:
     def __init__(self):
-        self.consoles = ConsoleManager()
+        self.nodes = NodeRegistry()
+        self.consoles = ConsoleManager(on_line=self.nodes.ingest)
         self.jobs = JobManager()
         self.ota = OtaState()
+        self.cfgota = CfgOtaState()
 
 
 def _sse_format(msg: dict) -> bytes:
@@ -746,6 +1065,9 @@ def make_handler(srv: DevServer):
                 if u.path in ("/tests", "/tests.html"):
                     self._serve_file(TESTS_HTML, "text/html; charset=utf-8")
                     return
+                if u.path in ("/config", "/config.html"):
+                    self._serve_file(CONFIG_HTML, "text/html; charset=utf-8")
+                    return
                 if u.path == "/api/tests/list":
                     self._json(list_tests())
                     return
@@ -768,6 +1090,15 @@ def make_handler(srv: DevServer):
                     return
                 if u.path == "/api/ota/status":
                     self._json({"ota": srv.ota.status(), "now": int(time.time())})
+                    return
+                if u.path == "/api/nodes":
+                    device = q.get("device", [""])[0]
+                    if not device:
+                        self._json({"error": "device required"}, 400); return
+                    self._json({"nodes": srv.nodes.list(device), "now": int(time.time())})
+                    return
+                if u.path == "/api/cfgota/status":
+                    self._json({"cfgota": srv.cfgota.status(), "now": int(time.time())})
                     return
                 if u.path == "/api/console/stream":
                     device = q.get("device", [""])[0]
@@ -833,6 +1164,9 @@ def make_handler(srv: DevServer):
                     return
                 if u.path == "/api/ota/start":
                     self._do_ota_start(body)
+                    return
+                if u.path == "/api/cfgota/start":
+                    self._do_cfgota_start(body)
                     return
                 self.send_error(404)
             except Exception as e:
@@ -990,6 +1324,41 @@ def make_handler(srv: DevServer):
             ).start()
             self._json({"ok": True, "device": device, "target": target,
                         "firmware": chosen["path"], "size": chosen["size"]})
+
+        # --- OTA configuration ---
+        def _do_cfgota_start(self, body):
+            device = body.get("device", "")
+            if not device:
+                self._json({"error": "device required"}, 400); return
+            try:
+                target = int(body.get("target"))
+                tx_pwr = int(body.get("tx_pwr"))
+                sf = int(body.get("sf"))
+                beacon_s = int(body.get("beacon_s"))
+            except (TypeError, ValueError):
+                self._json({"error": "target, tx_pwr, sf, beacon_s required"}, 400); return
+
+            if target < 1 or target > 254:
+                self._json({"error": "target must be 1-254"}, 400); return
+            if tx_pwr < 1 or tx_pwr > 22:
+                self._json({"error": "tx_pwr must be 1-22"}, 400); return
+            if sf < 5 or sf > 12:
+                self._json({"error": "sf must be 5-12"}, 400); return
+            if beacon_s < 1 or beacon_s > 255:
+                self._json({"error": "beacon_s must be 1-255"}, 400); return
+
+            if srv.cfgota.active():
+                self._json({"error": "a config push is already running"}, 409); return
+            if srv.ota.active():
+                self._json({"error": "a firmware OTA is running — wait for it to finish"}, 409); return
+
+            threading.Thread(
+                target=cfgota_driver,
+                args=(srv, device, target, tx_pwr, sf, beacon_s),
+                daemon=True,
+            ).start()
+            self._json({"ok": True, "device": device, "target": target,
+                        "tx_pwr": tx_pwr, "sf": sf, "beacon_s": beacon_s})
 
         # --- target tests (pytest) ---
         def _do_tests_run(self, body):

@@ -145,6 +145,7 @@ static void help_command(void) {
           "  send cfg pwr <N>          remote: set tx_power (1..22)\n"
           "  send cfg sf  <N>          remote: set SF (5..12)\n"
           "  send cfg both <pwr> <sf>  remote: set both\n"
+          "  send cfgota prepare|data|end ...  remote: OTA-configuration (ack'd, rollback-safe)\n"
           "  ping\n"
           "  version\n"
           "  reset\n"
@@ -618,6 +619,28 @@ static void get_commands(uint16_t argc, uint8_t *argv[]) {
             snprintf(buf, sizeof(buf), "OTA SelfTest: %s\r\n", ok ? "PASS" : "FAIL");
             print(buf);
         }
+    } else if (strcmp((const char *)argv[1], "cfgota") == 0) {
+        /* Debug/test introspection for the CFG-OTA rollback state — reads the
+         * same flash slots cfg_ota_rx_dispatch()/Reset_Handler use in main.c.
+         * (There's no RAM-state equivalent here: cfgota_state is local to
+         * main.c the same way ota_state is — this mirrors 'get ota pending'
+         * in only exposing what's durably staged in flash.) */
+        uint8_t pending = 0, peer = 0, tries = 0;
+        uint8_t bpwr = 0, bsf = 0, bbeacon = 0;
+        readFlash(CFG_OTA_PENDING, &pending);
+        readFlash(CFG_OTA_VERIFY_PEER, &peer);
+        readFlash(CFG_OTA_VERIFY_TRIES, &tries);
+        readFlash(CFG_OTA_BACKUP_TXPWR, &bpwr);
+        readFlash(CFG_OTA_BACKUP_SF, &bsf);
+        readFlash(CFG_OTA_BACKUP_BEACON, &bbeacon);
+        if (pending == 1) {
+            snprintf(buf, sizeof(buf),
+                     "CFGOTA Pending: YES peer=%u tries=%u backup_pwr=%u backup_sf=%u backup_beacon=%u\r\n",
+                     peer, tries, bpwr, bsf, bbeacon);
+        } else {
+            snprintf(buf, sizeof(buf), "CFGOTA Pending: NO\r\n");
+        }
+        print(buf);
     } else if (strcmp((const char *)argv[1], "extflash") == 0) {
         uint32_t id = ext_flash_read_id();
         snprintf(buf, sizeof(buf), "JEDEC ID: 0x%06lX (%s)\n",
@@ -756,6 +779,59 @@ static void send_commands(uint16_t argc, uint8_t *argv[]) {
         } else {
             print("Buffer full\n");
         }
+        return;
+    }
+
+    /* CFG-OTA relay — remote radio/beacon config with handshake + ack'd
+     * transfer + commit + rollback. See cfg_ota_rx_dispatch() in main.c for
+     * the receive side and the full wire-format doc.
+     *   send cfgota prepare <target>
+     *   send cfgota data    <target> <pwr 1..22> <sf 5..12> <beacon_s 1..255>
+     *   send cfgota end     <target> <crc32hex>
+     */
+    if (argc >= 4 && strcmp((const char *)argv[1], "cfgota") == 0) {
+        Packet pkt;
+        memset(&pkt, 0, sizeof(Packet));
+        pkt.pOwner = NET;
+        pkt.pktDir = OUTGOING;
+
+        const char *sub = (const char *)argv[2];
+        uint8_t target = (uint8_t)strtoul((const char *)argv[3], NULL, 10);
+
+        if (strcmp(sub, "prepare") == 0) {
+            pkt.control_app = CFG_OTA_PREPARE;
+            pkt.data[0] = target;
+            pkt.data[1] = 4;   /* CFG_OTA_PAYLOAD_LEN */
+            pkt.length  = APP_HEADER_SIZE + 2;
+        } else if (strcmp(sub, "data") == 0 && argc >= 7) {
+            uint8_t  pwr = (uint8_t)strtoul((const char *)argv[4], NULL, 10);
+            uint8_t  sf  = (uint8_t)strtoul((const char *)argv[5], NULL, 10);
+            uint16_t bsec = (uint16_t)strtoul((const char *)argv[6], NULL, 10);
+            pkt.control_app = CFG_OTA_DATA;
+            pkt.data[0] = target;
+            pkt.data[1] = pwr;
+            pkt.data[2] = sf;
+            pkt.data[3] = (uint8_t)(bsec & 0xFF);
+            pkt.data[4] = (uint8_t)(bsec >> 8);
+            pkt.length  = APP_HEADER_SIZE + 5;
+        } else if (strcmp(sub, "end") == 0 && argc >= 5) {
+            uint32_t crc = (uint32_t)strtoul((const char *)argv[4], NULL, 16);
+            pkt.control_app = CFG_OTA_END;
+            pkt.data[0] = target;
+            pkt.data[1] = (uint8_t)(crc & 0xFF);
+            pkt.data[2] = (uint8_t)((crc >> 8) & 0xFF);
+            pkt.data[3] = (uint8_t)((crc >> 16) & 0xFF);
+            pkt.data[4] = (uint8_t)((crc >> 24) & 0xFF);
+            pkt.length  = APP_HEADER_SIZE + 5;
+        } else {
+            print("Usage: send cfgota prepare <target> | data <target> <pwr> <sf> <beacon_s> | end <target> <crc32hex>\n");
+            return;
+        }
+
+        if (buffer_full(Ulme.pktTxBuf) != GLOB_ERROR_BUFFER_FULL)
+            write_packet(Ulme.pktTxBuf, &pkt);
+        else
+            print("Buffer full\n");
         return;
     }
 

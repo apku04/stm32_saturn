@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saturn Dev Dashboard — OTA Config</title>
+<style>
+  :root {
+    --bg:#0b1220; --panel:#0f1a2c; --panel2:#142238; --border:#1f2f4a;
+    --fg:#e6edf7; --muted:#7d8aa3; --accent:#5ab1ff; --accent2:#9be15d;
+    --warn:#ffb454; --bad:#ff6c6c; --ok:#65e3a4;
+    --mono:'JetBrains Mono','Fira Mono',Menlo,Consolas,monospace;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    font-size:14px; height:100%; }
+  body { display:flex; flex-direction:column; min-height:100vh;
+    background:
+      radial-gradient(1100px 540px at 100% -10%, rgba(90,177,255,.08), transparent 60%),
+      radial-gradient(900px 460px at -10% 0%, rgba(155,225,93,.05), transparent 55%),
+      var(--bg);
+    background-attachment:fixed; }
+
+  header {
+    position:sticky; top:0; z-index:30;
+    display:flex; align-items:center; gap:14px;
+    padding:11px 20px;
+    background:linear-gradient(180deg, rgba(15,26,44,.86), rgba(8,16,30,.66));
+    backdrop-filter:saturate(160%) blur(16px);
+    -webkit-backdrop-filter:saturate(160%) blur(16px);
+    border-bottom:1px solid rgba(255,255,255,.06);
+    box-shadow:0 1px 0 rgba(255,255,255,.04), 0 14px 40px -28px #000;
+  }
+  header .brand { display:flex; align-items:center; gap:11px; }
+  header .brand .logo {
+    width:34px; height:34px; border-radius:10px; display:grid; place-items:center;
+    font-size:17px; background:linear-gradient(135deg,var(--accent),#3f7fd6);
+    box-shadow:0 8px 20px -8px rgba(90,177,255,.6), inset 0 1px 0 rgba(255,255,255,.3);
+  }
+  header h1 { font-size:15px; margin:0; font-weight:700; letter-spacing:-.01em; }
+  header .badge { background:rgba(255,255,255,.04); border:1px solid var(--border);
+    padding:3px 10px; border-radius:999px; color:var(--muted); font-size:11.5px; font-weight:600; }
+  header .spacer { flex:1; }
+  header .clock { color:var(--muted); font-family:var(--mono); font-size:12px; }
+  header nav a {
+    text-decoration:none; padding:6px 13px; border-radius:9px; font-size:12.5px;
+    font-weight:600; transition:all .15s ease;
+  }
+
+  main {
+    display:grid;
+    grid-template-columns: 400px 1fr;
+    gap:14px; padding:16px;
+    flex:1; min-height:0;
+  }
+  .col { display:flex; flex-direction:column; gap:14px; min-height:0; }
+  .panel { background:linear-gradient(180deg, rgba(15,26,44,.92), rgba(20,34,56,.6));
+    border:1px solid var(--border); border-radius:14px;
+    padding:14px 16px; box-shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 30px -20px rgba(0,0,0,.7); }
+  .panel h2 { font-size:11px; font-weight:700; text-transform:uppercase;
+    letter-spacing:1.2px; color:var(--muted); margin:0 0 12px; display:flex;
+    align-items:center; gap:8px; }
+  .panel h2 .right { margin-left:auto; }
+  button, select, input[type=text], input[type=number] {
+    background:var(--panel2); color:var(--fg); border:1px solid var(--border);
+    border-radius:9px; padding:7px 13px; font:inherit;
+  }
+  button { cursor:pointer; font-weight:600; transition:background .15s, border-color .15s, transform .1s; }
+  button:hover:not(:disabled) { background:#1b2c4a; border-color:var(--accent); }
+  button:active:not(:disabled) { transform:translateY(1px); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.primary { background:linear-gradient(135deg,#2e7bd6,#1a4d83); border-color:transparent; color:#fff;
+    box-shadow:0 6px 18px -8px rgba(46,123,214,.7); }
+  button.primary:hover:not(:disabled) { filter:brightness(1.08); }
+  .small { font-size:12px; padding:5px 10px; border-radius:8px; }
+
+  .devlist { display:flex; flex-direction:column; gap:8px; }
+  .dev { padding:9px 11px; border:1px solid var(--border); border-radius:6px;
+    background:var(--panel2); cursor:pointer; transition:border-color .1s; }
+  .dev:hover { border-color:var(--accent); }
+  .dev.selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .dev .name { font-family:var(--mono); font-weight:600; }
+  .dev .meta { color:var(--muted); font-size:11px; margin-top:3px; font-family:var(--mono); }
+
+  .nodelist { display:flex; flex-direction:column; gap:6px; max-height:340px; overflow-y:auto; }
+  .node { padding:8px 10px; border:1px solid var(--border); border-radius:8px;
+    background:var(--panel2); cursor:pointer; }
+  .node:hover { border-color:var(--accent); }
+  .node.selected { border-color:var(--accent2); box-shadow:0 0 0 1px var(--accent2) inset; }
+  .node .row1 { display:flex; align-items:center; gap:8px; }
+  .node .mac { font-family:var(--mono); font-weight:700; font-size:14px; }
+  .node .age { margin-left:auto; color:var(--muted); font-size:11px; font-family:var(--mono); }
+  .node .meta { color:var(--muted); font-size:11px; margin-top:3px; font-family:var(--mono); }
+  .node .routes { color:var(--muted); font-size:10.5px; margin-top:3px; font-family:var(--mono);
+    white-space:normal; word-break:break-all; }
+  .pill { font-size:10.5px; padding:1px 6px; border-radius:8px;
+    background:#16365a; color:var(--accent); border:1px solid #2a5a96; }
+  .pill.via { background:#2a2a2a; color:var(--muted); border-color:#444; }
+
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+  .field label { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.6px; }
+  .field .hint { color:var(--muted); font-size:11px; }
+  .field input { width:100%; }
+  .field-row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+  .stages { display:flex; gap:4px; margin:10px 0; }
+  .stage { flex:1; text-align:center; padding:7px 4px; border-radius:8px;
+    background:var(--panel2); border:1px solid var(--border); color:var(--muted);
+    font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; }
+  .stage.active { border-color:var(--accent); color:var(--accent); background:#132a46; }
+  .stage.done { border-color:var(--ok); color:var(--ok); }
+  .stage.fail { border-color:var(--bad); color:var(--bad); }
+
+  .joblog { background:#050a14; color:#cfe1f5; border:1px solid var(--border);
+    border-radius:6px; font-family:var(--mono); font-size:12px;
+    padding:8px 10px; max-height:260px; overflow-y:auto;
+    white-space:pre-wrap; word-break:break-word; }
+  .joblog .l-info { color:var(--accent); }
+  .joblog .l-error { color:var(--bad); }
+  .joblog .l-done.ok { color:var(--ok); }
+  .joblog .l-done.fail { color:var(--bad); }
+  .joblog .l-done.warn { color:var(--warn); }
+
+  .console-wrap { display:flex; flex-direction:column; flex:1; min-height:0; }
+  .console {
+    flex:1; min-height:200px; background:#050a14; color:#cfe1f5;
+    border:1px solid var(--border); border-radius:6px;
+    font-family:var(--mono); font-size:12px; padding:8px 10px;
+    overflow-y:auto; white-space:pre-wrap; word-break:break-word;
+  }
+  .console .l-tx { color:var(--accent2); }
+  .console .l-rx { color:#cfe1f5; }
+  .console .l-meta { color:var(--warn); font-style:italic; }
+  .console .replay { opacity:.55; }
+
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); }
+  .label { color:var(--muted); font-size:11px; text-transform:uppercase;
+    letter-spacing:1px; margin:8px 0 4px; }
+  .stat-dot { width:8px; height:8px; border-radius:50%; display:inline-block;
+    background:var(--muted); }
+  .stat-dot.ok { background:var(--ok); }
+  .stat-dot.warn { background:var(--warn); }
+  .stat-dot.bad { background:var(--bad); }
+  .placeholder { color:var(--muted); font-size:13px; padding:10px;
+    border:1px dashed var(--border); border-radius:6px; text-align:center; }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">🛠️</span>
+    <h1>Saturn Dev</h1>
+  </div>
+  <span class="badge" id="hostBadge">pi5-jenkins</span>
+  <span class="badge muted">development</span>
+  <nav style="display:flex; gap:6px; margin-left:8px;">
+    <a href="/" style="color:var(--muted); background:rgba(255,255,255,.04); border:1px solid var(--border);">Devices &amp; Flash</a>
+    <a href="/tests" style="color:var(--muted); background:rgba(255,255,255,.04); border:1px solid var(--border);">Target Tests</a>
+    <a href="/config" style="color:#06121f; background:linear-gradient(135deg,var(--accent),#3f7fd6);">OTA Config</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="clock" id="clock">--:--:--</span>
+  <button class="small" onclick="refreshDevices()">↻ Devices</button>
+</header>
+
+<main>
+  <!-- Left column -->
+  <div class="col">
+    <section class="panel">
+      <h2>Relay Device <span class="right muted" id="devCount"></span></h2>
+      <div class="muted" style="font-size:11.5px; margin-bottom:8px;">
+        The CDC device this browser talks to over USB — it relays the config
+        handshake over LoRa to whichever node you pick below.
+      </div>
+      <div class="devlist" id="devList"><div class="placeholder">scanning…</div></div>
+    </section>
+
+    <section class="panel">
+      <h2>Nodes
+        <span class="right muted" id="nodeCount"></span>
+      </h2>
+      <div class="muted" style="font-size:11.5px; margin-bottom:8px;">
+        Learned live from beacons and piggybacked routing tables heard on the
+        relay above — direct neighbours and multi-hop nodes both show up.
+      </div>
+      <div class="nodelist" id="nodeList">
+        <div class="placeholder">select a relay device first</div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Right column -->
+  <div class="col">
+    <section class="panel">
+      <h2>Push Configuration <span class="right muted" id="cfgStateBadge"></span></h2>
+      <div class="field">
+        <label>Target node</label>
+        <input type="number" id="cfgTarget" min="1" max="254" placeholder="e.g. 44">
+        <span class="hint" id="cfgTargetHint">pick a node on the left, or type its id</span>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>TX power (1–22 dBm)</label>
+          <input type="number" id="cfgPwr" min="1" max="22" value="14">
+        </div>
+        <div class="field">
+          <label>Spreading factor (5–12)</label>
+          <input type="number" id="cfgSf" min="5" max="12" value="7">
+        </div>
+      </div>
+      <div class="field">
+        <label>Beacon interval (1–255 s)</label>
+        <input type="number" id="cfgBeacon" min="1" max="255" value="10">
+      </div>
+
+      <div class="row" style="margin:10px 0;">
+        <button class="primary" id="cfgBtn" onclick="startCfgOta()" disabled>Push Configuration</button>
+        <span class="muted" id="cfgHint">select a relay device + target</span>
+      </div>
+
+      <div class="stages" id="cfgStages">
+        <div class="stage" data-stage="handshake">Handshake</div>
+        <div class="stage" data-stage="transmitting">Transfer</div>
+        <div class="stage" data-stage="committing">Commit</div>
+        <div class="stage" data-stage="rebooting_verifying">Reboot &amp; Verify</div>
+        <div class="stage" data-stage="final">Result</div>
+      </div>
+      <div class="muted" style="font-size:11px; margin:2px 0 6px;">
+        A successful push always ends in one of two ways: the node pings its
+        last-heard-from neighbour after rebooting and reports back — <b>verified</b>
+        (new config committed) or <b>rolled back</b> (old config restored
+        automatically because the link check failed). Nothing is left in a
+        half-applied state.
+      </div>
+
+      <div class="label">Log</div>
+      <div class="joblog" id="cfgLog"><span class="muted">no config push yet</span></div>
+    </section>
+
+    <section class="panel console-wrap">
+      <h2>
+        Console
+        <span class="muted" id="consoleDevLabel" style="font-family:var(--mono); font-weight:600; text-transform:none; letter-spacing:0; margin-left:6px;"></span>
+        <span class="right">
+          <span class="stat-dot" id="consoleDot"></span>
+          <span class="muted" id="consoleStatus">disconnected</span>
+        </span>
+      </h2>
+      <div class="console" id="consoleOut"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+//---------------- state ----------------
+const state = {
+  devices: { cdc: [] },
+  selectedDev: null,
+  selectedTarget: null,
+  nodes: [],
+  nodePollTimer: null,
+  consoleES: null,
+  cfgRunning: false,
+  cfgPollTimer: null,
+  cfgLogSeen: 0,
+  cfgLogStarted: false,
+  cfgFinalPrinted: false,
+};
+
+const $ = id => document.getElementById(id);
+
+function tick() { $('clock').textContent = new Date().toLocaleTimeString(); }
+setInterval(tick, 1000); tick();
+
+//---------------- devices --------------
+async function refreshDevices() {
+  try {
+    const r = await fetch('/api/devices');
+    const j = await r.json();
+    state.devices = j;
+    renderDevices();
+  } catch (e) {
+    $('devList').innerHTML = `<div class="placeholder">error: ${e}</div>`;
+  }
+}
+
+function renderDevices() {
+  const cdc = (state.devices.cdc || []).filter(d => d.is_stm32);
+  $('devCount').textContent = `${cdc.length} device${cdc.length!==1?'s':''}`;
+  if (!cdc.length) {
+    $('devList').innerHTML = '<div class="placeholder">no STM32 CDC devices found</div>';
+    return;
+  }
+  $('devList').innerHTML = cdc.map(d => {
+    const sel = d.device === state.selectedDev ? 'selected' : '';
+    return `<div class="dev ${sel}" onclick="selectDevice('${d.device}')">
+      <div class="name">${d.device}</div>
+      <div class="meta">${d.product || ''}${d.serial_number ? ' sn='+d.serial_number : ''}</div>
+    </div>`;
+  }).join('');
+  if (state.selectedDev && !cdc.some(d => d.device === state.selectedDev)) {
+    state.selectedDev = null;
+    stopConsole();
+    stopNodePolling();
+  }
+}
+
+function selectDevice(devPath) {
+  state.selectedDev = devPath;
+  renderDevices();
+  startConsole(devPath);
+  startNodePolling();
+  updateCfgBtn();
+}
+
+//---------------- nodes ----------------
+async function refreshNodes() {
+  if (!state.selectedDev) return;
+  try {
+    const r = await fetch(`/api/nodes?device=${encodeURIComponent(state.selectedDev)}`);
+    const j = await r.json();
+    state.nodes = j.nodes || [];
+    renderNodes();
+  } catch (e) { /* transient */ }
+}
+
+function startNodePolling() {
+  stopNodePolling();
+  refreshNodes();
+  state.nodePollTimer = setInterval(refreshNodes, 3000);
+}
+function stopNodePolling() {
+  if (state.nodePollTimer) { clearInterval(state.nodePollTimer); state.nodePollTimer = null; }
+  state.nodes = [];
+  renderNodes();
+}
+
+function renderNodes() {
+  $('nodeCount').textContent = state.nodes.length
+    ? `${state.nodes.length} node${state.nodes.length!==1?'s':''}` : '';
+  if (!state.selectedDev) {
+    $('nodeList').innerHTML = '<div class="placeholder">select a relay device first</div>';
+    return;
+  }
+  if (!state.nodes.length) {
+    $('nodeList').innerHTML = '<div class="placeholder">no nodes heard yet — waiting for beacons…</div>';
+    return;
+  }
+  $('nodeList').innerHTML = state.nodes.map(n => {
+    const sel = n.mac === state.selectedTarget ? 'selected' : '';
+    const via = n.seen_direct
+      ? '<span class="pill">direct</span>'
+      : '<span class="pill via">via routing table</span>';
+    const radio = (n.tx_pwr != null || n.sf != null)
+      ? `pwr=${n.tx_pwr ?? '—'} sf=${n.sf ?? '—'}` : '';
+    const rf = (n.rssi != null) ? `rssi=${n.rssi} snr=${n.snr ?? '—'}` : '';
+    const routes = (n.routing || []).length
+      ? 'routes: ' + n.routing.map(r => `${r.dest}→${r.next_hop}:${r.hops}`).join(' ')
+      : '';
+    return `<div class="node ${sel}" onclick="selectNode(${n.mac})">
+      <div class="row1">
+        <span class="mac">#${n.mac}</span>${via}
+        <span class="age">${n.age_s.toFixed(0)}s ago</span>
+      </div>
+      <div class="meta">${[radio, rf].filter(Boolean).join(' · ')}</div>
+      ${routes ? `<div class="routes">${routes}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+function selectNode(mac) {
+  state.selectedTarget = mac;
+  $('cfgTarget').value = mac;
+  const n = state.nodes.find(x => x.mac === mac);
+  if (n) {
+    if (n.tx_pwr != null) $('cfgPwr').value = n.tx_pwr;
+    if (n.sf != null) $('cfgSf').value = n.sf;
+  }
+  renderNodes();
+  updateCfgBtn();
+}
+
+//---------------- console (SSE, read-only view) --------
+function appendConsole(cls, text, replay=false) {
+  const el = $('consoleOut');
+  const wasNearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  const span = document.createElement('span');
+  span.className = `l-${cls} ${replay ? 'replay' : ''}`;
+  span.textContent = `${text}\n`;
+  el.appendChild(span);
+  while (el.childNodes.length > 3000) el.removeChild(el.firstChild);
+  if (wasNearBottom) el.scrollTop = el.scrollHeight;
+}
+
+function setConsoleStatus(st, label) {
+  $('consoleDot').className = `stat-dot ${st}`;
+  $('consoleStatus').textContent = label;
+}
+
+function startConsole(devPath) {
+  stopConsole();
+  $('consoleDevLabel').textContent = devPath;
+  setConsoleStatus('warn', 'connecting');
+  $('consoleOut').innerHTML = '';
+  const es = new EventSource(`/api/console/stream?device=${encodeURIComponent(devPath)}`);
+  state.consoleES = es;
+  es.onopen = () => setConsoleStatus('ok', 'connected');
+  es.onerror = () => setConsoleStatus('bad', 'disconnected');
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello') appendConsole('meta', `[opened ${m.device}]`);
+    else if (m.type === 'rx') appendConsole('rx', m.text, m.replay);
+    else if (m.type === 'tx') appendConsole('tx', m.text);
+    else if (m.type === 'closed') { appendConsole('meta', '[port closed]'); setConsoleStatus('bad','closed'); }
+  };
+}
+function stopConsole() {
+  if (state.consoleES) { state.consoleES.close(); state.consoleES = null; }
+  setConsoleStatus('', 'disconnected');
+}
+
+//---------------- config push -----------
+document.addEventListener('input', e => {
+  if (['cfgTarget','cfgPwr','cfgSf','cfgBeacon'].includes(e.target.id)) updateCfgBtn();
+});
+
+function updateCfgBtn() {
+  const target = parseInt($('cfgTarget').value, 10);
+  const pwr = parseInt($('cfgPwr').value, 10);
+  const sf = parseInt($('cfgSf').value, 10);
+  const beacon = parseInt($('cfgBeacon').value, 10);
+  const ok = !!state.selectedDev &&
+    Number.isInteger(target) && target >= 1 && target <= 254 &&
+    Number.isInteger(pwr) && pwr >= 1 && pwr <= 22 &&
+    Number.isInteger(sf) && sf >= 5 && sf <= 12 &&
+    Number.isInteger(beacon) && beacon >= 1 && beacon <= 255;
+  $('cfgBtn').disabled = !ok || state.cfgRunning;
+  if (state.cfgRunning) $('cfgHint').textContent = 'push in progress…';
+  else if (!state.selectedDev) $('cfgHint').textContent = 'select a relay device';
+  else if (!ok) $('cfgHint').textContent = 'fill in a valid target + values';
+  else $('cfgHint').textContent = `→ node ${target} via ${state.selectedDev}`;
+}
+
+function appendCfgLog(cls, text) {
+  const el = $('cfgLog');
+  if (!state.cfgLogStarted) { el.innerHTML = ''; state.cfgLogStarted = true; }
+  const span = document.createElement('span');
+  span.className = `l-${cls}`;
+  span.textContent = text + '\n';
+  el.appendChild(span);
+  el.scrollTop = el.scrollHeight;
+}
+
+function setStage(activeStage, outcome) {
+  const order = ['handshake','transmitting','committing','rebooting_verifying','final'];
+  const idx = order.indexOf(activeStage);
+  document.querySelectorAll('#cfgStages .stage').forEach(el => {
+    const s = el.dataset.stage;
+    const sIdx = order.indexOf(s);
+    el.classList.remove('active','done','fail');
+    if (outcome && s === 'final') {
+      el.classList.add(outcome === 'done' ? 'done' : outcome === 'rolled_back' ? 'fail' : 'fail');
+    } else if (sIdx < idx || (outcome && sIdx <= idx)) {
+      el.classList.add('done');
+    } else if (sIdx === idx) {
+      el.classList.add('active');
+    }
+  });
+}
+
+async function startCfgOta() {
+  const target = parseInt($('cfgTarget').value, 10);
+  const tx_pwr = parseInt($('cfgPwr').value, 10);
+  const sf = parseInt($('cfgSf').value, 10);
+  const beacon_s = parseInt($('cfgBeacon').value, 10);
+  if (!state.selectedDev) return;
+  $('cfgLog').innerHTML = '';
+  state.cfgLogStarted = false;
+  state.cfgLogSeen = 0;
+  state.cfgFinalPrinted = false;
+  $('cfgBtn').disabled = true;
+  $('cfgStateBadge').textContent = 'starting…';
+  setStage('handshake');
+  try {
+    const r = await fetch('/api/cfgota/start', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({device: state.selectedDev, target, tx_pwr, sf, beacon_s})});
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || 'failed to start config push');
+    state.cfgRunning = true;
+    pollCfgStatus();
+  } catch (e) {
+    appendCfgLog('error', `error: ${e.message}`);
+    $('cfgStateBadge').textContent = '';
+    updateCfgBtn();
+  }
+}
+
+function renderCfgStatus(job) {
+  if (!job) return;
+  state.cfgRunning = (job.state === 'running');
+  const badges = {running:'running', done:'verified', rolled_back:'rolled back',
+                  error:'error', unknown:'unknown'};
+  $('cfgStateBadge').textContent = badges[job.state] || job.state;
+
+  setStage(job.stage || 'handshake', job.state !== 'running' ? job.state : null);
+
+  const seen = state.cfgLogSeen || 0;
+  const log = job.log || [];
+  for (let i = seen; i < log.length; i++) {
+    const cls = /timeout|reject|fail|error/i.test(log[i].msg) ? 'error' : 'info';
+    appendCfgLog(cls, log[i].msg);
+  }
+  state.cfgLogSeen = log.length;
+
+  if (job.state !== 'running' && !state.cfgFinalPrinted) {
+    const cls = job.state === 'done' ? 'done ok'
+              : job.state === 'rolled_back' ? 'done warn' : 'done fail';
+    appendCfgLog(cls, `[${job.state}]${job.error ? ' ' + job.error : ''}`);
+    state.cfgFinalPrinted = true;
+    updateCfgBtn();
+  }
+}
+
+async function pollCfgStatus() {
+  if (state.cfgPollTimer) clearTimeout(state.cfgPollTimer);
+  try {
+    const r = await fetch('/api/cfgota/status');
+    const j = await r.json();
+    if (j.cfgota) renderCfgStatus(j.cfgota);
+  } catch (e) { /* transient */ }
+  if (state.cfgRunning) {
+    state.cfgPollTimer = setTimeout(pollCfgStatus, 700);
+  }
+}
+
+//---------------- boot -----------------
+refreshDevices();
+setInterval(refreshDevices, 4000);
+updateCfgBtn();
+(async () => {
+  try {
+    const r = await fetch('/api/cfgota/status');
+    const j = await r.json();
+    if (j.cfgota) {
+      state.cfgLogSeen = 0;
+      state.cfgFinalPrinted = false;
+      renderCfgStatus(j.cfgota);
+      if (j.cfgota.state === 'running') pollCfgStatus();
+    }
+  } catch (e) { /* dev_web not up yet */ }
+})();
+</script>
+</body>
+</html>

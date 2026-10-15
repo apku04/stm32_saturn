@@ -196,12 +196,16 @@ static GLOB_RET network_outgoing(Packet *pkt) {
         pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK ||
         pkt->control_app == OTA_PREPARE || pkt->control_app == OTA_BEGIN ||
         pkt->control_app == OTA_DATA || pkt->control_app == OTA_END ||
-        pkt->control_app == OTA_ACK) {
+        pkt->control_app == OTA_ACK ||
+        pkt->control_app == CFG_OTA_PREPARE || pkt->control_app == CFG_OTA_DATA ||
+        pkt->control_app == CFG_OTA_END || pkt->control_app == CFG_OTA_ACK) {
         if (pkt->control_app == PING || pkt->control_app == PONG ||
             pkt->control_app == CMD_CFG || pkt->control_app == CMD_ACK ||
             pkt->control_app == OTA_PREPARE || pkt->control_app == OTA_BEGIN ||
             pkt->control_app == OTA_DATA || pkt->control_app == OTA_END ||
-            pkt->control_app == OTA_ACK)
+            pkt->control_app == OTA_ACK ||
+            pkt->control_app == CFG_OTA_PREPARE || pkt->control_app == CFG_OTA_DATA ||
+            pkt->control_app == CFG_OTA_END || pkt->control_app == CFG_OTA_ACK)
             pkt->TTL = 0;
         if (pkt->control_app == BEACON)
             age_routing_table();

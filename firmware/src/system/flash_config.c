@@ -95,11 +95,16 @@ void writeFlashByte(addrEnum addr, uint8_t value) {
 }
 
 void writeFlashParamByte(addrEnum addr, uint8_t value) {
-    uint8_t slots[UID_FINGERPRINT + 1];
+    writeFlashParamBytes(&addr, &value, 1);
+}
 
-    for (uint8_t i = 0; i <= UID_FINGERPRINT; i++)
+void writeFlashParamBytes(const addrEnum *addrs, const uint8_t *vals, uint8_t n) {
+    uint8_t slots[FLASH_PARAM_COUNT];
+
+    for (uint8_t i = 0; i < FLASH_PARAM_COUNT; i++)
         readFlash((addrEnum)i, &slots[i]);
-    slots[addr] = value;
+    for (uint8_t i = 0; i < n; i++)
+        slots[addrs[i]] = vals[i];
 
     flash_unlock();
     flash_wait();
@@ -111,7 +116,7 @@ void writeFlashParamByte(addrEnum addr, uint8_t value) {
     FLASH_SR = FLASH_SR_EOP;
 
     FLASH_CR |= FLASH_CR_PG;
-    for (uint8_t i = 0; i <= UID_FINGERPRINT; i++) {
+    for (uint8_t i = 0; i < FLASH_PARAM_COUNT; i++) {
         volatile uint32_t *dst = (volatile uint32_t *)(CONFIG_PAGE_ADDR + (uint32_t)i * 8);
         dst[0] = slots[i];
         dst[1] = 0xFFFFFFFF;

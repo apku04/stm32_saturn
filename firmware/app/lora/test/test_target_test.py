@@ -2,8 +2,9 @@ import pytest
 import time
 import logging
 import re
+import zlib
 
-from conftest import send_command
+from conftest import send_command, STM32_VID, STM32_PID
 from header_handler import Header
 
 
@@ -594,3 +595,329 @@ class TestDeviceCommunicationSunshineScenarios:
         assert message == msg2
         assert header.source_adr == 102
         logging.info(f"\nDevice 2->1: {message}, source={header.source_adr}")
+
+
+# ===========================================================================
+#  CFG-OTA (OTA-over-LoRa remote configuration) protocol tests
+#  Need 2 STM32 boards. See cfg_ota_rx_dispatch() in app/lora/main.c for the
+#  receive side and firmware/app/lora/main.c's CFG-OTA block for the wire
+#  format doc: PREPARE (handshake) -> DATA (values, ack'd received) -> END
+#  (commit trigger, independent CRC check) -> target restarts into the new
+#  config as PROVISIONAL -> pings its last-heard-from peer to verify the link
+#  survived -> a final RESULT ack reports VERIFIED (committed) or ROLLBACK
+#  (reverted live + persisted + rebooted again into the previous config).
+# ===========================================================================
+
+CFGOTA_OP_PREPARE = 0
+CFGOTA_OP_DATA = 1
+CFGOTA_OP_END = 2
+CFGOTA_OP_RESULT = 3
+
+CFGOTA_STATUS_OK = 0
+CFGOTA_STATUS_BUSY = 1
+CFGOTA_STATUS_BAD_SIZE = 2
+CFGOTA_STATUS_BAD_VALUE = 3
+CFGOTA_STATUS_CRC_FAIL = 4
+CFGOTA_STATUS_ROLLBACK = 5
+CFGOTA_STATUS_VERIFIED = 6
+
+CFGOTA_ACK_RE = re.compile(r"\[CFGOTA_ACK\]\s+from=(\d+)\s+op=(\d+)\s+status=(\d+)")
+
+
+def wait_for_cfgota_ack(ser, op, timeout=8, from_mac=None):
+    """Read raw serial until a matching [CFGOTA_ACK] line appears, or return
+    None on timeout. Doesn't rely on newline-clean framing — [CFGOTA_ACK] can
+    land concatenated onto a preceding print, so this scans with re.finditer
+    over the whole accumulated buffer rather than splitting into lines."""
+    deadline = time.time() + timeout
+    buf = ""
+    while time.time() < deadline:
+        n = ser.in_waiting
+        if n:
+            buf += ser.read(n).decode(errors='ignore')
+            for m in CFGOTA_ACK_RE.finditer(buf):
+                frm, o, status = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if o == op and (from_mac is None or frm == from_mac):
+                    return status
+        time.sleep(0.05)
+    return None
+
+
+def cfgota_prepare(ser, target, timeout=8):
+    ser.reset_input_buffer()
+    ser.write(f'send cfgota prepare {target}\r\n'.encode())
+    return wait_for_cfgota_ack(ser, CFGOTA_OP_PREPARE, timeout=timeout, from_mac=target)
+
+
+def cfgota_data(ser, target, pwr, sf, beacon_s, timeout=8):
+    ser.reset_input_buffer()
+    ser.write(f'send cfgota data {target} {pwr} {sf} {beacon_s}\r\n'.encode())
+    return wait_for_cfgota_ack(ser, CFGOTA_OP_DATA, timeout=timeout, from_mac=target)
+
+
+def cfgota_end(ser, target, crc_hex, timeout=8):
+    ser.reset_input_buffer()
+    ser.write(f'send cfgota end {target} {crc_hex}\r\n'.encode())
+    return wait_for_cfgota_ack(ser, CFGOTA_OP_END, timeout=timeout, from_mac=target)
+
+
+def abort_cfgota_session(ser, target):
+    """Force the target back to CFGOTA_IDLE from READY or RECEIVED, via an
+    intentionally out-of-range DATA (pwr=0). The firmware resets to idle on
+    ANY validation failure regardless of which state it was in — this is the
+    cheap, immediate alternative to waiting out the 15s idle timeout between
+    tests. Returns the ack status (should be BAD_VALUE)."""
+    return cfgota_data(ser, target, pwr=0, sf=7, beacon_s=10)
+
+
+def cfgota_push_full(ser, target, pwr, sf, beacon_s,
+                      prepare_timeout=8, data_timeout=8, end_timeout=8):
+    """Drive PREPARE -> DATA -> END to completion. Returns (ok, stage, status):
+    stage is the step that failed ('prepare'/'data'/'end') or None if every
+    step ack'd OK — a True result means the target has committed the change
+    as PROVISIONAL and is rebooting, not that it's verified yet."""
+    st = cfgota_prepare(ser, target, timeout=prepare_timeout)
+    if st != CFGOTA_STATUS_OK:
+        return False, 'prepare', st
+    st = cfgota_data(ser, target, pwr, sf, beacon_s, timeout=data_timeout)
+    if st != CFGOTA_STATUS_OK:
+        return False, 'data', st
+    payload = bytes([pwr & 0xFF, sf & 0xFF, beacon_s & 0xFF, (beacon_s >> 8) & 0xFF])
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    st = cfgota_end(ser, target, f"{crc:08x}", timeout=end_timeout)
+    if st != CFGOTA_STATUS_OK:
+        return False, 'end', st
+    return True, None, CFGOTA_STATUS_OK
+
+
+def reconnect_by_mac(old_ser, expected_mac, timeout=20):
+    """Close a serial handle and find whichever STM32 CDC device now reports
+    `expected_mac`, after an internal reset (SCB_AIRCR SYSRESETREQ — the same
+    mechanism the plain 'reset' command uses, see TestResetCommand). CFG-OTA's
+    commit and rollback paths both reboot this way.
+
+    Deliberately does NOT assume the device comes back on the SAME
+    /dev/ttyACM* path — a soft reset on this hardware can re-enumerate it
+    under a different number even though it's the same physical board (see
+    project memory 'hw-setup-stm32-nodes': "ACM numbers shift after USB
+    reconnects"). Identifying it by its own reported mac_address, scanned
+    across every present STM32 CDC port, is robust to that; matching by port
+    name is not."""
+    import serial as ser_mod
+    import serial.tools.list_ports as list_ports
+    try:
+        old_ser.close()
+    except Exception:
+        pass
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for p in list_ports.comports():
+            if not (p.vid and f"{p.vid:04x}" == STM32_VID
+                    and p.pid and f"{p.pid:04x}" == STM32_PID):
+                continue
+            try:
+                cand = ser_mod.Serial(p.device, 115200, timeout=0.3)
+                cand.dtr = True
+                cand.rts = True
+                time.sleep(0.25)
+                cand.reset_input_buffer()
+                cand.write(b'get mac_address\r\n')
+                time.sleep(0.3)
+                resp = cand.read(cand.in_waiting).decode(errors='ignore')
+                m = re.search(r'MAC Address:\s*(\d+)', resp)
+                if m and int(m.group(1)) == expected_mac:
+                    return cand
+                cand.close()
+            except ser_mod.SerialException:
+                pass
+        time.sleep(0.3)
+    raise Exception(f"no STM32 CDC device reporting mac={expected_mac} "
+                    f"came back within {timeout}s")
+
+
+class TestCfgOtaConfigPush:
+    """OTA-over-LoRa remote CONFIGURATION: handshake -> ack'd transfer ->
+    commit -> restart -> self-verify -> VERIFIED or auto-ROLLBACK.
+
+    Ordered so every test leaves the target's cfgota state IDLE for the next
+    one: validation-failure tests self-reset (BAD_VALUE/CRC_FAIL do), and
+    prepare-only/end-too-early tests call abort_cfgota_session() explicitly.
+    The two full-cycle tests at the end actually commit + reboot the target.
+    """
+
+    TARGET_MAC = 11   # serial_ports fixture assigns sers[0]=10, sers[1]=11
+
+    @pytest.fixture(scope='class', autouse=True)
+    def _persist_macs_to_flash(self, serial_ports):
+        """The shared serial_ports fixture sets MAC addresses RAM-only (see
+        conftest.py — no 'set flash 1' there). Every other test class gets
+        away with that because nothing else in the suite reboots the device
+        for real; this class does (CFG-OTA commit/rollback), and a real
+        reboot reloads mac_address from flash — so 10/11 need to be
+        persisted, not just live in RAM, or the target silently reverts to
+        its old identity mid-suite. Same 'set mac_address N; set flash 1'
+        pattern as TestFlashStorage.test_write_flash."""
+        for idx, ser in enumerate(serial_ports.sers):
+            mac = 10 + idx
+            send_command(ser, f'set mac_address {mac}')
+            send_command(ser, 'set flash 1')
+
+    def test_help_lists_cfgota(self, serial_port):
+        response = send_command(serial_port, 'help')
+        assert 'cfgota' in response.lower()
+
+    def test_pending_flag_clear_before_suite(self, serial_ports):
+        """Precondition: neither board should already be mid-rollback-dance
+        from an earlier run before these tests start."""
+        for ser in serial_ports.sers:
+            ser.reset_input_buffer()
+            ser.write(b'get cfgota\r\n')
+            time.sleep(0.3)
+            resp = ser.read(ser.in_waiting).decode(errors='ignore')
+            assert 'CFGOTA Pending: NO' in resp, \
+                f"{ser.name} has a stuck provisional config: {resp!r}"
+
+    def test_prepare_ack_ok(self, serial_ports):
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        status = cfgota_prepare(pusher, self.TARGET_MAC)
+        assert status == CFGOTA_STATUS_OK, f"expected PREPARE ok, got status={status}"
+        # Session is now READY on the target; clean up for the next test.
+        assert abort_cfgota_session(pusher, self.TARGET_MAC) == CFGOTA_STATUS_BAD_VALUE
+
+    def test_prepare_wrong_target_no_reply(self, serial_ports):
+        """A PREPARE addressed to a mac nobody owns must never be acked by
+        either board — they only act when the payload's target byte equals
+        their own mac (main.c: `p[0] != get_mac_address()` early-return)."""
+        pusher = serial_ports.sers[0]
+        status = cfgota_prepare(pusher, 253, timeout=5)
+        assert status is None, f"unexpected ack for an unowned target: status={status}"
+
+    def test_data_without_prepare_is_busy(self, serial_ports):
+        """DATA with no active session is rejected (state==IDLE -> BUSY),
+        not silently accepted."""
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        status = cfgota_data(pusher, self.TARGET_MAC, pwr=14, sf=7, beacon_s=10)
+        assert status == CFGOTA_STATUS_BUSY, f"expected BUSY with no session, got status={status}"
+
+    def test_data_bad_pwr_rejected(self, serial_ports):
+        # Each sub-case needs its OWN prepare: a BAD_VALUE ack resets the
+        # target to CFGOTA_IDLE (that's the point of it), so a second DATA
+        # sent right after would itself get BUSY ("no session"), not
+        # BAD_VALUE — that would be testing the wrong thing.
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_data(pusher, self.TARGET_MAC, pwr=0, sf=7, beacon_s=10)
+        assert status == CFGOTA_STATUS_BAD_VALUE, f"pwr=0 should be rejected, got status={status}"
+
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_data(pusher, self.TARGET_MAC, pwr=23, sf=7, beacon_s=10)
+        assert status == CFGOTA_STATUS_BAD_VALUE, f"pwr=23 should be rejected, got status={status}"
+
+    def test_data_bad_sf_rejected(self, serial_ports):
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_data(pusher, self.TARGET_MAC, pwr=14, sf=4, beacon_s=10)
+        assert status == CFGOTA_STATUS_BAD_VALUE, f"sf=4 should be rejected, got status={status}"
+
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_data(pusher, self.TARGET_MAC, pwr=14, sf=13, beacon_s=10)
+        assert status == CFGOTA_STATUS_BAD_VALUE, f"sf=13 should be rejected, got status={status}"
+
+    def test_data_bad_beacon_rejected(self, serial_ports):
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_data(pusher, self.TARGET_MAC, pwr=14, sf=7, beacon_s=0)
+        assert status == CFGOTA_STATUS_BAD_VALUE, f"beacon_s=0 should be rejected, got status={status}"
+
+    def test_data_ack_ok_then_bad_crc_end_rejected(self, serial_ports):
+        """Valid DATA is ack'd as fully received; an END with the WRONG crc
+        is rejected and — critically — nothing is applied (live radio config
+        on the target is unchanged, proven directly on its own console)."""
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        before_pwr = send_command(target, 'get tx_power')
+        before_sf = send_command(target, 'get data_rate')
+
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_data(pusher, self.TARGET_MAC, pwr=9, sf=10, beacon_s=42)
+        assert status == CFGOTA_STATUS_OK, f"expected DATA ok, got status={status}"
+
+        status = cfgota_end(pusher, self.TARGET_MAC, "deadbeef")
+        assert status == CFGOTA_STATUS_CRC_FAIL, f"expected CRC_FAIL, got status={status}"
+
+        after_pwr = send_command(target, 'get tx_power')
+        after_sf = send_command(target, 'get data_rate')
+        assert after_pwr == before_pwr, "tx_power changed despite a rejected commit"
+        assert after_sf == before_sf, "data_rate changed despite a rejected commit"
+
+    def test_end_before_data_is_busy(self, serial_ports):
+        """END while still in READY (no DATA yet) is rejected without
+        touching state — confirmed by a subsequent DATA still working."""
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_end(pusher, self.TARGET_MAC, "00000000")
+        assert status == CFGOTA_STATUS_BUSY, f"expected BUSY (no data yet), got status={status}"
+        # Session is still READY (END-too-early doesn't touch state) — clean up.
+        assert abort_cfgota_session(pusher, self.TARGET_MAC) == CFGOTA_STATUS_BAD_VALUE
+
+    def test_double_prepare_is_busy(self, serial_ports):
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        assert cfgota_prepare(pusher, self.TARGET_MAC) == CFGOTA_STATUS_OK
+        status = cfgota_prepare(pusher, self.TARGET_MAC)
+        assert status == CFGOTA_STATUS_BUSY, f"expected BUSY on a 2nd prepare, got status={status}"
+        assert abort_cfgota_session(pusher, self.TARGET_MAC) == CFGOTA_STATUS_BAD_VALUE
+
+    def test_full_success_commit_reboot_and_verify(self, serial_ports):
+        """The whole happy path: PREPARE/DATA/END all ack ok, the target
+        restarts, and — because the pushed SF/power still match the pusher's
+        own radio settings — its post-reboot verify ping succeeds. Confirms
+        the RESULT ack (VERIFIED) AND that the new setting actually persisted
+        by reconnecting to the target and reading it back directly."""
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        before = send_command(target, 'get beacon_interval')
+        new_beacon_s = 9 if 'Interval: 9' not in before else 8
+
+        ok, stage, status = cfgota_push_full(
+            pusher, self.TARGET_MAC, pwr=14, sf=7, beacon_s=new_beacon_s)
+        assert ok, f"push failed at {stage!r} with status={status}"
+
+        result = wait_for_cfgota_ack(pusher, CFGOTA_OP_RESULT, timeout=30,
+                                     from_mac=self.TARGET_MAC)
+        assert result == CFGOTA_STATUS_VERIFIED, \
+            f"expected VERIFIED (SF/power unchanged, link should hold), got status={result}"
+
+        new_target = reconnect_by_mac(target, self.TARGET_MAC, timeout=20)
+        serial_ports.sers[1] = new_target
+        resp = send_command(new_target, 'get beacon_interval')
+        assert f"Interval: {new_beacon_s} s" in resp, f"beacon interval did not persist: {resp!r}"
+        resp = send_command(new_target, 'get cfgota')
+        assert 'CFGOTA Pending: NO' in resp, f"still provisional after VERIFIED: {resp!r}"
+
+    def test_rollback_on_unreachable_sf(self, serial_ports):
+        """Push a spreading factor that the pusher itself does NOT use — the
+        target reboots onto it, genuinely cannot be heard, exhausts its
+        verify-ping retries, and must revert on its own. This is the core
+        safety guarantee of the feature: a bad-but-in-range config can never
+        strand the node, only cost it one extra reboot cycle."""
+        pusher, target = serial_ports.sers[0], serial_ports.sers[1]
+        pusher_sf = int(re.search(r'\d+', send_command(pusher, 'get data_rate')).group())
+        broken_sf = 5 if pusher_sf != 5 else 6
+        assert broken_sf != pusher_sf
+
+        ok, stage, status = cfgota_push_full(
+            pusher, self.TARGET_MAC, pwr=14, sf=broken_sf, beacon_s=10)
+        assert ok, f"push failed at {stage!r} with status={status}"
+
+        # settle(2s) + up to 5 verify-ping attempts 4s apart (main.c
+        # CFG_OTA_VERIFY_SETTLE_MS/MAX_TRIES/TIMEOUT_MS) ~= 22s worst case,
+        # plus the two physical reboots — give it real margin.
+        result = wait_for_cfgota_ack(pusher, CFGOTA_OP_RESULT, timeout=40,
+                                     from_mac=self.TARGET_MAC)
+        assert result == CFGOTA_STATUS_ROLLBACK, \
+            f"expected ROLLBACK for an unreachable SF, got status={result}"
+
+        new_target = reconnect_by_mac(target, self.TARGET_MAC, timeout=20)
+        serial_ports.sers[1] = new_target
+        resp = send_command(new_target, 'get data_rate')
+        assert str(pusher_sf) in resp, f"SF did not roll back to {pusher_sf}: {resp!r}"
+        resp = send_command(new_target, 'get cfgota')
+        assert 'CFGOTA Pending: NO' in resp, f"still provisional after ROLLBACK: {resp!r}"

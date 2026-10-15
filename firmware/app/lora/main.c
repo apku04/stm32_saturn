@@ -84,6 +84,21 @@ typedef enum {
 static ota_state_t ota_state  = OTA_STATE_IDLE;
 static uint32_t    ota_idle_dl = 0;
 
+/* ---- OTA-configuration state (see CFG_OTA_* below + boot-time verify in
+ * Reset_Handler). Declared here for the same reason as ota_state: beaconHandler
+ * and the firmware-OTA busy checks need to see it too, so the two "own the
+ * radio + flash" protocols never run concurrently. ---- */
+typedef enum {
+    CFGOTA_IDLE = 0,
+    CFGOTA_READY,      /* PREPARE accepted; waiting for DATA   */
+    CFGOTA_RECEIVED,   /* DATA accepted; waiting for END/commit */
+} cfgota_state_t;
+static cfgota_state_t cfgota_state        = CFGOTA_IDLE;
+static uint32_t        cfgota_idle_dl     = 0;
+/* true from boot (if a provisional config was pending) until the post-reboot
+ * link-verify ping either succeeds (commit) or exhausts retries (rollback). */
+static bool             cfgota_verify_active = false;
+
 /* ---- Forward declarations ---- */
 static void clock_init(void);
 static void led_init(void);
@@ -182,7 +197,11 @@ static void persist_beacon_interval_s(uint8_t seconds) {
 
 /* ---- Beacon handler (called every 10s by timer) ---- */
 static void beaconHandler(void) {
-    if (ota_state != OTA_STATE_IDLE) return;   /* suspend beacons during OTA */
+    /* Suspend beacons during firmware OTA, config OTA transfer, and the
+     * post-reboot config-OTA link verification — all three want a quiet
+     * radio and an undistracted main loop. */
+    if (ota_state != OTA_STATE_IDLE || cfgota_state != CFGOTA_IDLE ||
+        cfgota_verify_active) return;
     if (GLOB_ERROR_BUFFER_FULL != buffer_full(&pTxBuf)) {
         if (get_beacon_flag()) {
             Packet pkt;
@@ -378,7 +397,8 @@ static bool ota_rx_dispatch(Packet *pkt, PacketBuffer *txbuf) {
          * Payload: target(1) ver[16] size_lo size_hi crc[4]  = 23 bytes total */
         if (data_len < off + 23 || p[0] != get_mac_address()) return true;
 
-        if (ota_state != OTA_STATE_IDLE) {
+        if (ota_state != OTA_STATE_IDLE || cfgota_state != CFGOTA_IDLE ||
+            cfgota_verify_active) {
             ota_send_ack(txbuf, OTA_OP_PREPARE, OTA_PREPARE_BUSY, 0);
             return true;
         }
@@ -418,7 +438,8 @@ static bool ota_rx_dispatch(Packet *pkt, PacketBuffer *txbuf) {
     case OTA_BEGIN: {
         /* Legacy path kept for backward compat — also transitions to READY state */
         if (data_len < off + 3 || p[0] != get_mac_address()) return true;
-        if (ota_state != OTA_STATE_IDLE) {
+        if (ota_state != OTA_STATE_IDLE || cfgota_state != CFGOTA_IDLE ||
+            cfgota_verify_active) {
             ota_send_ack(txbuf, OTA_OP_BEGIN, OTA_PREPARE_BUSY, 0);
             return true;
         }
@@ -502,11 +523,201 @@ static bool ota_rx_dispatch(Packet *pkt, PacketBuffer *txbuf) {
     }
 }
 
+/* ---- OTA-over-LoRa CONFIGURATION (radio power / SF / beacon interval) ----
+ *
+ * Same handshake -> transfer -> ack-received -> apply -> restart shape as the
+ * firmware OTA above, sized for a payload that fits in one packet instead of
+ * needing chunked transfer:
+ *   CFG_OTA_PREPARE: target(1) len(1)                          (handshake)
+ *   CFG_OTA_DATA   : target(1) pwr(1) sf(1) beacon_lo beacon_hi (the values)
+ *   CFG_OTA_END    : target(1) crc32[4]                        (commit trigger)
+ *   CFG_OTA_ACK    : op(1) status(1)                           (target -> sender)
+ *
+ * Radio-parameter changes can't crash the firmware — they can only make the
+ * node go deaf on the wrong SF/power, which nothing on the wire can detect
+ * synchronously. So END does not mean "success": it stages the new values as
+ * PROVISIONAL (new values + a full rollback backup + the mac of whichever
+ * peer this node last heard from, all in one flash write), acks "applying",
+ * and reboots. On the far side of that reboot the node pings its recorded
+ * peer; a PONG commits (clears the pending flag), silence after
+ * CFG_OTA_VERIFY_MAX_TRIES restores the backup — live, so the very rollback
+ * ACK below can be heard — persists it, and reboots again into the known-good
+ * state. Either outcome ends in one more CFG_OTA_ACK (RESULT) telling the
+ * peer it verified or rolled back.
+ */
+#define CFG_OTA_OP_PREPARE 0
+#define CFG_OTA_OP_DATA    1
+#define CFG_OTA_OP_END     2
+#define CFG_OTA_OP_RESULT  3   /* post-reboot outcome, sent to the verify peer */
+
+#define CFG_OTA_STATUS_OK        0
+#define CFG_OTA_STATUS_BUSY      1
+#define CFG_OTA_STATUS_BAD_SIZE  2
+#define CFG_OTA_STATUS_BAD_VALUE 3
+#define CFG_OTA_STATUS_CRC_FAIL  4
+#define CFG_OTA_STATUS_ROLLBACK  5   /* RESULT: link verify failed, reverted */
+#define CFG_OTA_STATUS_VERIFIED  6   /* RESULT: link confirmed, committed    */
+
+#define CFG_OTA_PAYLOAD_LEN        4u      /* pwr(1) sf(1) beacon_lo(1) beacon_hi(1) */
+#define CFG_OTA_IDLE_TIMEOUT_MS    15000u  /* abort an unfinished transfer after this */
+#define CFG_OTA_VERIFY_SETTLE_MS   2000u   /* let radio/timer come up before 1st ping */
+#define CFG_OTA_VERIFY_TIMEOUT_MS  4000u   /* wait this long per attempt for a PONG   */
+#define CFG_OTA_VERIFY_MAX_TRIES   5u
+
+static uint8_t  cfgota_new_pwr           = 0;
+static uint8_t  cfgota_new_sf            = 0;
+static uint16_t cfgota_new_beacon        = 0;
+static uint32_t cfgota_staged_crc        = 0;
+static uint8_t  cfgota_verify_peer_pend  = 0;   /* captured at PREPARE, staged at END */
+static uint32_t cfgota_reboot_at         = 0;   /* get_tick_ms() deadline; 0 = off     */
+
+/* Boot-time link verification (armed in Reset_Handler when CFG_OTA_PENDING). */
+static uint8_t  cfgota_verify_peer       = 0;
+static uint8_t  cfgota_verify_tries      = 0;
+static uint32_t cfgota_verify_next_at    = 0;
+static bool     cfgota_verify_waiting    = false;   /* PING sent, awaiting PONG */
+
+/* Most recent node this device heard a packet from — the default verify peer
+ * for a config push, per the "ping whoever you last heard from" design: it
+ * proves general mesh connectivity survived, not just that the original
+ * pusher is still around. Updated at the very end of app_incoming so a
+ * CFG_OTA_PREPARE handler sees the peer from BEFORE that same packet. */
+static uint8_t last_rx_src = 0;
+
+static void cfg_ota_send_ack(PacketBuffer *txbuf, uint8_t op, uint8_t status, uint8_t dest) {
+    Packet ack;
+    memset(&ack, 0, sizeof(Packet));
+    ack.pOwner = NET;
+    ack.pktDir = OUTGOING;
+    ack.destination_adr = dest;   /* 0 = broadcast, seen by anyone listening */
+    ack.control_app = CFG_OTA_ACK;
+    ack.data[0] = op;
+    ack.data[1] = status;
+    ack.length  = APP_HEADER_SIZE + 2;
+    if (buffer_full(txbuf) != GLOB_ERROR_BUFFER_FULL)
+        write_packet(txbuf, &ack);
+}
+
+/* Returns true if pkt was a CFG-OTA control packet (handled — caller returns). */
+static bool cfg_ota_rx_dispatch(Packet *pkt, PacketBuffer *txbuf) {
+    uint8_t off = pkt->mesh_tbl_entries * 3;
+    uint8_t data_len = (pkt->length > PACKET_HEADER_SIZE)
+                       ? (uint8_t)(pkt->length - PACKET_HEADER_SIZE) : 0;
+    uint8_t *p = &pkt->data[off];
+
+    switch (pkt->control_app) {
+    case CFG_OTA_PREPARE: {
+        if (data_len < off + 2 || p[0] != get_mac_address()) return true;
+
+        if (ota_state != OTA_STATE_IDLE || cfgota_state != CFGOTA_IDLE ||
+            cfgota_verify_active) {
+            cfg_ota_send_ack(txbuf, CFG_OTA_OP_PREPARE, CFG_OTA_STATUS_BUSY, 0);
+            return true;
+        }
+        if (p[1] != CFG_OTA_PAYLOAD_LEN) {
+            cfg_ota_send_ack(txbuf, CFG_OTA_OP_PREPARE, CFG_OTA_STATUS_BAD_SIZE, 0);
+            return true;
+        }
+
+        cfgota_verify_peer_pend = last_rx_src ? last_rx_src : pkt->source_adr;
+        cfgota_state   = CFGOTA_READY;
+        cfgota_idle_dl = get_tick_ms() + CFG_OTA_IDLE_TIMEOUT_MS;
+        print("[CFGOTA] PREPARE ok -> ready for config data\n");
+        cfg_ota_send_ack(txbuf, CFG_OTA_OP_PREPARE, CFG_OTA_STATUS_OK, 0);
+        return true;
+    }
+    case CFG_OTA_DATA: {
+        if (data_len < off + 1 + CFG_OTA_PAYLOAD_LEN || p[0] != get_mac_address())
+            return true;
+        if (cfgota_state == CFGOTA_IDLE) {
+            cfg_ota_send_ack(txbuf, CFG_OTA_OP_DATA, CFG_OTA_STATUS_BUSY, 0);
+            return true;
+        }
+
+        uint8_t  pwr = p[1], sf = p[2];
+        uint16_t beacon_s = (uint16_t)p[3] | ((uint16_t)p[4] << 8);
+        if (pwr < 1 || pwr > 22 || sf < 5 || sf > 12 ||
+            beacon_s < 1u || beacon_s > 255u) {
+            cfgota_state = CFGOTA_IDLE;
+            print("[CFGOTA] DATA rejected: value out of range\n");
+            cfg_ota_send_ack(txbuf, CFG_OTA_OP_DATA, CFG_OTA_STATUS_BAD_VALUE, 0);
+            return true;
+        }
+
+        cfgota_new_pwr    = pwr;
+        cfgota_new_sf     = sf;
+        cfgota_new_beacon = beacon_s;
+        cfgota_staged_crc = crc32_compute(&p[1], CFG_OTA_PAYLOAD_LEN);
+        cfgota_state      = CFGOTA_RECEIVED;
+        cfgota_idle_dl    = get_tick_ms() + CFG_OTA_IDLE_TIMEOUT_MS;
+        print("[CFGOTA] DATA ok -> all received, awaiting commit\n");
+        cfg_ota_send_ack(txbuf, CFG_OTA_OP_DATA, CFG_OTA_STATUS_OK, 0);
+        return true;
+    }
+    case CFG_OTA_END: {
+        if (data_len < off + 5 || p[0] != get_mac_address()) return true;
+        if (cfgota_state != CFGOTA_RECEIVED) {
+            cfg_ota_send_ack(txbuf, CFG_OTA_OP_END, CFG_OTA_STATUS_BUSY, 0);
+            return true;
+        }
+
+        uint32_t want;
+        memcpy(&want, &p[1], 4);
+        if (want != cfgota_staged_crc) {
+            cfgota_state = CFGOTA_IDLE;
+            print("[CFGOTA] END CRC FAIL — not applied\n");
+            cfg_ota_send_ack(txbuf, CFG_OTA_OP_END, CFG_OTA_STATUS_CRC_FAIL, 0);
+            return true;
+        }
+
+        /* Commit as PROVISIONAL: stage the new values + a full rollback
+         * backup + the verify peer in ONE flash write. The live radio/RAM
+         * state is untouched, so this ACK still goes out at the current
+         * (proven-working) settings, exactly like OTA_END's reboot-after-ack. */
+        addrEnum addrs[9]; uint8_t vals[9]; uint8_t n = 0;
+        addrs[n] = RADIO_TX_PWR;         vals[n++] = cfgota_new_pwr;
+        addrs[n] = RADIO_DR;             vals[n++] = cfgota_new_sf;
+        addrs[n] = PARAMETER_N;          vals[n++] = (uint8_t)cfgota_new_beacon;
+        addrs[n] = CFG_OTA_BACKUP_TXPWR; vals[n++] = radio_get_tx_power();
+        addrs[n] = CFG_OTA_BACKUP_SF;    vals[n++] = radio_get_datarate();
+        addrs[n] = CFG_OTA_BACKUP_BEACON;vals[n++] = (uint8_t)timer_get_beacon_interval_s();
+        addrs[n] = CFG_OTA_VERIFY_PEER;  vals[n++] = cfgota_verify_peer_pend;
+        addrs[n] = CFG_OTA_VERIFY_TRIES; vals[n++] = 0;
+        addrs[n] = CFG_OTA_PENDING;      vals[n++] = 1;
+        writeFlashParamBytes(addrs, vals, n);
+
+        cfgota_state = CFGOTA_IDLE;
+        char b[96];
+        snprintf(b, sizeof(b),
+                 "[CFGOTA] commit ok: pwr=%u sf=%u beacon=%u verify_peer=%u -> rebooting\n",
+                 cfgota_new_pwr, cfgota_new_sf, cfgota_new_beacon, cfgota_verify_peer_pend);
+        print(b);
+        cfg_ota_send_ack(txbuf, CFG_OTA_OP_END, CFG_OTA_STATUS_OK, 0);
+        cfgota_reboot_at = get_tick_ms() + 800;   /* let the ACK transmit first */
+        return true;
+    }
+    case CFG_OTA_ACK: {
+        /* Observed on the gateway/sender — surfaced for the host-side driver. */
+        if (data_len >= off + 2) {
+            char b[64];
+            snprintf(b, sizeof(b), "[CFGOTA_ACK] from=%u op=%u status=%u\n",
+                     pkt->source_adr, p[0], p[1]);
+            print(b);
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
     /* OTA control traffic is high-volume (≈1000 fragments per image): handle it
      * before the verbose per-packet prints below so it neither spams the console
      * nor is slowed by USB-CDC output. */
     if (ota_rx_dispatch(pkt, txbuf))
+        return;
+    if (cfg_ota_rx_dispatch(pkt, txbuf))
         return;
 
     /* Print received packet info.
@@ -684,6 +895,17 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             write_packet(txbuf, &resp);
     }
 
+    /* A PONG while a post-reboot CFG-OTA link check is outstanding is the
+     * proof we needed: the new radio settings still reach the mesh. Commit
+     * by clearing the pending flag and tell the verify peer it stuck. */
+    if (pkt->control_app == PONG && cfgota_verify_active && cfgota_verify_waiting) {
+        cfgota_verify_waiting = false;
+        cfgota_verify_active  = false;
+        writeFlashParamByte(CFG_OTA_PENDING, 0);
+        cfg_ota_send_ack(txbuf, CFG_OTA_OP_RESULT, CFG_OTA_STATUS_VERIFIED, cfgota_verify_peer);
+        print("[CFGOTA] link verified -> configuration committed\n");
+    }
+
     /* Handle CMD_CFG on the field device: send CMD_ACK first, THEN apply
      * the new setting (so the ACK still goes out at the old power/SF and
      * is heard by the base). Beacon interval can optionally be persisted. */
@@ -809,6 +1031,12 @@ static void app_incoming(Packet *pkt, PacketBuffer *txbuf) {
             }
         }
     }
+
+    /* Remember who we last heard from — the default CFG-OTA verify peer.
+     * Updated last so a CFG_OTA_PREPARE handled above still sees the peer
+     * from BEFORE this packet, not this packet's own sender. */
+    if (pkt->source_adr != get_mac_address() && pkt->source_adr != 0)
+        last_rx_src = pkt->source_adr;
 }
 
 /* ---- HardFault handler ---- */
@@ -961,6 +1189,29 @@ void Reset_Handler(void) {
     diag.init_stage = 12;
     wdt_kick();
 
+    /* Arm CFG-OTA link verification if a config push committed to flash as
+     * PROVISIONAL just before this boot (see CFG_OTA_END in cfg_ota_rx_dispatch).
+     * The actual ping/retry/rollback dance is driven from the main loop below
+     * so it doesn't block boot or the watchdog. */
+    {
+        uint8_t pending = 0;
+        readFlash(CFG_OTA_PENDING, &pending);
+        if (pending == 1) {
+            uint8_t peer = 0, tries = 0;
+            readFlash(CFG_OTA_VERIFY_PEER, &peer);
+            readFlash(CFG_OTA_VERIFY_TRIES, &tries);
+            cfgota_verify_active  = true;
+            cfgota_verify_peer    = peer;
+            cfgota_verify_tries   = tries;
+            cfgota_verify_next_at = get_tick_ms() + CFG_OTA_VERIFY_SETTLE_MS;
+            char b[64];
+            snprintf(b, sizeof(b),
+                     "[CFGOTA] provisional config pending, verify_peer=%u tries=%u\n",
+                     peer, tries);
+            print(b);
+        }
+    }
+
     /* Main loop — fully polled, same structure as PIC24 */
     diag.init_stage = 0xFF;   /* reached main loop successfully */
     while (1) {
@@ -979,6 +1230,74 @@ void Reset_Handler(void) {
             ota_state   = OTA_STATE_IDLE;
             ota_rx_size = 0;
             print("[OTA] idle timeout — resuming normal operation\n");
+        }
+
+        /* CFG-OTA: reboot once the END-ACK (commit) or the RESULT ack
+         * (rollback) has had time to transmit. */
+        if (cfgota_reboot_at && get_tick_ms() >= cfgota_reboot_at) {
+            SCB_AIRCR = 0x05FA0004u;   /* VECTKEY | SYSRESETREQ */
+            while (1);
+        }
+
+        /* CFG-OTA idle timeout: if TX went silent mid-handshake, abort back to idle */
+        if (cfgota_state != CFGOTA_IDLE && get_tick_ms() >= cfgota_idle_dl) {
+            cfgota_state = CFGOTA_IDLE;
+            print("[CFGOTA] idle timeout — resuming normal operation\n");
+        }
+
+        /* CFG-OTA post-reboot link verification: ping the recorded peer;
+         * a PONG (handled in app_incoming) commits. No PONG after
+         * CFG_OTA_VERIFY_MAX_TRIES attempts means the new settings made us
+         * deaf — restore the backup LIVE (so the rollback ack can be heard),
+         * persist it, notify the peer, and reboot into the clean state. */
+        if (cfgota_verify_active && radio_ok) {
+            uint32_t now = get_tick_ms();
+            if (cfgota_verify_waiting) {
+                if (now >= cfgota_verify_next_at)
+                    cfgota_verify_waiting = false;   /* this attempt timed out, retry below */
+            } else if (now >= cfgota_verify_next_at) {
+                if (cfgota_verify_tries >= CFG_OTA_VERIFY_MAX_TRIES) {
+                    uint8_t bpwr = 14, bsf = 7, bbeacon = 10;
+                    readFlash(CFG_OTA_BACKUP_TXPWR, &bpwr);
+                    readFlash(CFG_OTA_BACKUP_SF, &bsf);
+                    readFlash(CFG_OTA_BACKUP_BEACON, &bbeacon);
+                    if (bpwr < 1 || bpwr > 22) bpwr = 14;
+                    if (bsf < 5 || bsf > 12) bsf = 7;
+                    if (bbeacon < 1) bbeacon = 10;
+
+                    radio_set_tx_power(bpwr);
+                    radio_set_datarate(bsf);
+                    timer_set_beacon_interval_s(bbeacon);
+
+                    addrEnum addrs[4]; uint8_t vals[4]; uint8_t n = 0;
+                    addrs[n] = RADIO_TX_PWR;    vals[n++] = bpwr;
+                    addrs[n] = RADIO_DR;        vals[n++] = bsf;
+                    addrs[n] = PARAMETER_N;     vals[n++] = bbeacon;
+                    addrs[n] = CFG_OTA_PENDING; vals[n++] = 0;
+                    writeFlashParamBytes(addrs, vals, n);
+
+                    cfg_ota_send_ack(&pTxBuf, CFG_OTA_OP_RESULT, CFG_OTA_STATUS_ROLLBACK,
+                                     cfgota_verify_peer);
+                    print("[CFGOTA] link verify failed -> rolled back to previous settings\n");
+                    cfgota_verify_active = false;
+                    cfgota_reboot_at = get_tick_ms() + 800;   /* let the ACK transmit first */
+                } else {
+                    Packet ping;
+                    memset(&ping, 0, sizeof(Packet));
+                    ping.pOwner = NET;
+                    ping.pktDir = OUTGOING;
+                    ping.control_app = PING;
+                    ping.destination_adr = cfgota_verify_peer;
+                    ping.length = 4;
+                    if (buffer_full(&pTxBuf) != GLOB_ERROR_BUFFER_FULL) {
+                        write_packet(&pTxBuf, &ping);
+                        cfgota_verify_waiting = true;
+                        cfgota_verify_tries++;
+                        writeFlashParamByte(CFG_OTA_VERIFY_TRIES, cfgota_verify_tries);
+                        cfgota_verify_next_at = now + CFG_OTA_VERIFY_TIMEOUT_MS;
+                    }
+                }
+            }
         }
 
         diag.main_chk = MAINCHK_USB;   usb_cdc_poll();

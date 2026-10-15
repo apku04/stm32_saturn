@@ -38,7 +38,20 @@ typedef enum {
     OTA_PENDING_FLAG,
     OTA_IMAGE_SIZE_LO,
     OTA_IMAGE_SIZE_HI,
-    UID_FINGERPRINT
+    UID_FINGERPRINT,
+    /* ---- OTA-configuration rollback state (see CFG_OTA_* in app/lora/main.c) ----
+     * A config push is staged as PROVISIONAL: the new radio/beacon values are
+     * written alongside a full backup of the values they replace and the mac
+     * of the peer to ping-verify against after reboot. Only once that peer
+     * answers is the change considered committed (CFG_OTA_PENDING cleared);
+     * otherwise boot restores the backup and reboots again. */
+    CFG_OTA_PENDING,        /* 1 = provisional config awaiting link verification */
+    CFG_OTA_BACKUP_TXPWR,   /* pre-change tx power, for rollback                 */
+    CFG_OTA_BACKUP_SF,      /* pre-change spreading factor, for rollback         */
+    CFG_OTA_BACKUP_BEACON,  /* pre-change beacon interval (s), for rollback      */
+    CFG_OTA_VERIFY_PEER,    /* mac to ping after reboot to confirm link survived */
+    CFG_OTA_VERIFY_TRIES,   /* verify-ping attempts made so far this boot        */
+    FLASH_PARAM_COUNT       /* sentinel: number of parameter slots — keep last   */
 } addrEnum;
 
 /* ---- Packet direction / ownership ---- */
@@ -46,7 +59,9 @@ typedef enum { DIR_EMPTY, OUTGOING, INCOMING, RETX } Direction;
 typedef enum { OWNER_EMPTY, PHY, MAC, NET, APP }     Owner;
 typedef enum { BEACON, PAYLOAD, ACK, PING, PONG, CMD_CFG, CMD_ACK,
                OTA_BEGIN, OTA_DATA, OTA_END, OTA_ACK,
-               OTA_PREPARE } PacketType;
+               OTA_PREPARE,
+               CFG_OTA_PREPARE, CFG_OTA_DATA, CFG_OTA_END,
+               CFG_OTA_ACK } PacketType;
 
 /* ---- Return codes ---- */
 typedef enum {
