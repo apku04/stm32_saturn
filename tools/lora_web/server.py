@@ -1228,6 +1228,13 @@ def make_handler(store: Store):
                 if u.path == "/api/nodes":
                     self._send_json({"nodes": store.nodes(), "now": int(time.time())})
                     return
+                if u.path == "/api/channels":
+                    mon = getattr(store, "chanmon", None)
+                    if mon is None:
+                        self._send_json({"enabled": False, "now": int(time.time())})
+                    else:
+                        self._send_json(dict(mon.snapshot(), enabled=True))
+                    return
                 if u.path == "/api/series":
                     src = int(q.get("src", ["0"])[0])
                     hours = float(q.get("hours", ["24"])[0])
@@ -1437,6 +1444,12 @@ def main():
     ap.add_argument("--bind", default="0.0.0.0")
     ap.add_argument("--no-serial", action="store_true",
                     help="don't read serial; just serve the UI from existing DB")
+    ap.add_argument("--gateway-udp", type=int, default=None, metavar="PORT",
+                    help="also receive packets from an SX1301 packet forwarder "
+                         "(Semtech UDP) on this port, e.g. 1700")
+    ap.add_argument("--gateway-conf", default=None, metavar="PATH",
+                    help="packet forwarder global_conf.json, so the Channels tab "
+                         "lists every listening channel (even quiet ones)")
     args = ap.parse_args()
 
     print(f"[db] {args.db}", flush=True)
@@ -1463,6 +1476,23 @@ def main():
                 args=(store, stop),
                 daemon=True,
             ).start()
+
+    if args.gateway_udp:
+        import gateway_rx
+        plan = None
+        if args.gateway_conf:
+            try:
+                plan = gateway_rx.load_channel_plan(args.gateway_conf)
+                print(f"[gateway] {len(plan['channels'])} channels from {args.gateway_conf}",
+                      flush=True)
+            except (OSError, ValueError, KeyError) as e:
+                print(f"[gateway] could not read {args.gateway_conf}: {e}", flush=True)
+        store.chanmon = gateway_rx.ChannelMonitor(plan)
+        threading.Thread(
+            target=gateway_rx.udp_reader,
+            args=("0.0.0.0", args.gateway_udp, store, stop, store.chanmon),
+            daemon=True,
+        ).start()
 
     httpd = ThreadingHTTPServer((args.bind, args.http_port), make_handler(store))
     url = f"http://{args.bind if args.bind != '0.0.0.0' else 'localhost'}:{args.http_port}/"

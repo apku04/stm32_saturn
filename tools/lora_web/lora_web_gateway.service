@@ -1,0 +1,21 @@
+[Unit]
+Description=Saturn LoRa Web Dashboard (SX1301 concentrator input)
+# Packets come from the Semtech packet forwarder (ttn-gateway.service on the
+# RAK image) over UDP 1700. chirpstack-gateway-bridge must be stopped: it
+# binds the same port.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/lora_web
+ExecStart=/usr/bin/python3 /home/pi/lora_web/server.py --no-serial --gateway-udp 1700 --gateway-conf /opt/ttn-gateway/packet_forwarder/lora_pkt_fwd/global_conf.json --http-port 8080
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lora_web
+
+[Install]
+WantedBy=multi-user.target

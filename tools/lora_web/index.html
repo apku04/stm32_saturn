@@ -616,6 +616,39 @@
   .config-status th, .config-status td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
   .config-status th { color:var(--muted); font-weight:500; }
   .ok { color:#1a8f3c; } .pending { color:#b25e00; } .bad { color:#d92d20; }
+
+  /* ---- Channel monitor ------------------------------------------------ */
+  .ch-grid {
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px;
+  }
+  .ch-card {
+    background:var(--panel-2); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px 13px; display:flex; flex-direction:column; gap:7px; min-width:0;
+  }
+  .ch-card.s-live { border-color:rgba(52,199,89,.45); box-shadow:0 0 0 3px rgba(52,199,89,.08); }
+  .ch-head { display:flex; align-items:center; gap:8px; }
+  .ch-head .chip-dot { width:8px; height:8px; border-radius:50%; background:#9ca3af; flex:none; }
+  .ch-card.s-live .chip-dot { background:var(--good); box-shadow:0 0 0 3px rgba(52,199,89,.2); }
+  .ch-card.s-recent .chip-dot { background:var(--warn); }
+  .ch-name { font-weight:700; font-size:13px; }
+  .ch-freq { margin-left:auto; font-weight:700; font-size:14px; font-variant-numeric:tabular-nums; }
+  .ch-meta { color:var(--muted); font-size:11px; }
+  .ch-big { font-size:22px; font-weight:800; letter-spacing:-.02em; line-height:1; }
+  .ch-big .unit { font-size:12px; color:var(--muted); font-weight:500; margin-left:4px; }
+  .ch-kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:11.5px;
+    font-variant-numeric:tabular-nums; }
+  .ch-kv span:nth-child(odd) { color:var(--muted); }
+  .ch-sf { display:flex; flex-wrap:wrap; gap:4px; }
+  .ch-sf span { font-size:10.5px; padding:1px 6px; border-radius:999px;
+    background:rgba(88,86,214,.08); color:var(--accent); font-weight:600; }
+  .ch-spark { display:flex; align-items:flex-end; gap:1px; height:26px; }
+  .ch-spark i { flex:1; background:var(--accent-2); opacity:.75; border-radius:1px 1px 0 0; min-height:1px; }
+  .ch-spark i.z { background:var(--border); opacity:1; }
+  .ch-tbl { overflow-x:auto; }
+  .ch-tbl table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+  .ch-tbl th, .ch-tbl td { text-align:left; padding:5px 8px; border-bottom:1px solid var(--border-soft); white-space:nowrap; }
+  .ch-tbl th { color:var(--muted); font-weight:500; }
+  .ch-tbl td.mono { font-family:ui-monospace,Menlo,Consolas,monospace; }
 </style>
 </head>
 <body>
@@ -668,6 +701,7 @@
     <button class="tab active" data-tab="dashboard"><span class="ico">📊</span>Dashboard</button>
     <button class="tab" data-tab="map"><span class="ico">🗺️</span>Map</button>
     <button class="tab" data-tab="topology"><span class="ico">🕸️</span>Mesh Topology</button>
+    <button class="tab" data-tab="channels"><span class="ico">📶</span>Channels</button>
     <div class="nav-section">Control</div>
     <button class="tab" data-tab="config"><span class="ico">⚙️</span>Config</button>
     <button class="tab" data-tab="ota"><span class="ico">⬆️</span>OTA Update</button>
@@ -733,6 +767,33 @@
         <code>hops</code> = distance.
       </div>
       <div id="nodeTables"></div>
+    </div>
+  </div>
+
+  <div id="tab-channels" class="tab-panel">
+    <div id="chOff" class="placeholder" style="display:none;">
+      Channel monitor needs the concentrator input — start the server with
+      <code>--gateway-udp 1700 --gateway-conf …/global_conf.json</code>.
+    </div>
+    <div id="chOn">
+      <div class="summary" id="chSummary"></div>
+      <div class="topo-wrap">
+        <div class="chart-title">Listening channels — SX1301 concentrator</div>
+        <div class="ch-grid" id="chGrid"></div>
+        <div class="topo-note">
+          Every packet the concentrator reports is counted here, including CRC
+          failures and non-mesh traffic. Bars = packets per minute over the last
+          hour. A channel with no traffic is still listening.
+        </div>
+      </div>
+      <div class="topo-wrap" style="margin-top:16px;">
+        <div class="chart-title">Activity — packets per minute, last 60 min</div>
+        <div id="chHeat" style="height:300px;"></div>
+      </div>
+      <div class="topo-wrap" style="margin-top:16px;">
+        <div class="chart-title">Recent packets (all channels, newest first)</div>
+        <div class="ch-tbl" id="chRecent"></div>
+      </div>
     </div>
   </div>
 
@@ -1312,6 +1373,9 @@ function selectTab(name) {
   if (name === 'config') {
     refreshConfig();
   }
+  if (name === 'channels') {
+    refreshChannels();
+  }
   if (name === 'ota') {
     otaOnEnter();
   } else {
@@ -1334,6 +1398,98 @@ function selectTab(name) {
 }
 document.querySelectorAll('.tab').forEach(t =>
   t.addEventListener('click', () => selectTab(t.dataset.tab)));
+
+// ---- Channel monitor ----
+function chFreq(hz) { return hz ? (hz / 1e6).toFixed(3) : '—'; }
+function chLabel(c) {
+  if (c.chan === 8) return 'LoRa std';
+  if (c.chan === 9) return 'FSK';
+  return (typeof c.chan === 'number' && c.chan < 8) ? 'CH ' + c.chan : 'CH ?';
+}
+function chCard(c, now) {
+  const age = c.last_ts ? now - c.last_ts : null;
+  const st = age == null ? '' : age < 60 ? 's-live' : age < 600 ? 's-recent' : '';
+  const max = Math.max(1, ...c.per_min);
+  const bars = c.per_min.map(n =>
+    n ? `<i style="height:${Math.max(8, 100 * n / max)}%"></i>` : '<i class="z"></i>').join('');
+  const sfs = Object.entries(c.sf).sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `<span>${dfEsc(k)} · ${n}</span>`).join('');
+  const meta = [c.kind, c.bw ? (c.bw / 1000) + ' kHz' : null, c.sf_range,
+                c.radio != null ? 'radio ' + c.radio : null].filter(Boolean).join(' · ');
+  const v = (x, u = '') => x == null ? '—' : x + u;
+  return `<div class="ch-card ${st}">
+    <div class="ch-head"><span class="chip-dot"></span>
+      <span class="ch-name">${chLabel(c)}</span>
+      <span class="ch-freq">${chFreq(c.freq)} MHz</span></div>
+    <div class="ch-meta">${dfEsc(meta)}</div>
+    <div class="ch-big">${c.total}<span class="unit">packets</span></div>
+    <div class="ch-kv">
+      <span>CRC ok / bad</span><span><span class="ok">${c.crc_ok}</span> / <span class="${c.crc_bad ? 'bad' : ''}">${c.crc_bad}</span></span>
+      <span>Last RSSI / SNR</span><span>${v(c.rssi_last, ' dBm')} / ${v(c.snr_last, ' dB')}</span>
+      <span>Avg RSSI / SNR</span><span>${v(c.rssi_avg, ' dBm')} / ${v(c.snr_avg, ' dB')}</span>
+      <span>RSSI range</span><span>${c.rssi_min == null ? '—' : c.rssi_min + ' … ' + c.rssi_max + ' dBm'}</span>
+      <span>Last heard</span><span>${age == null ? 'never' : fmtAge(age) + ' ago'}</span>
+    </div>
+    <div class="ch-sf">${sfs}</div>
+    <div class="ch-spark" title="packets per minute, last ${c.per_min.length} min">${bars}</div>
+  </div>`;
+}
+function chRecentRow(p) {
+  const t = new Date(p.ts * 1000).toLocaleTimeString();
+  const crc = p.stat === 1 ? '<span class="ok">OK</span>'
+            : p.stat === -1 ? '<span class="bad">BAD</span>' : 'none';
+  const what = p.src != null
+    ? `${p.src} → ${p.dst === 255 ? 'all' : p.dst} · ${dfEsc(p.type)} #${p.seq}`
+    : (p.hex ? `<span class="mono">${dfEsc(p.hex)}…</span>` : '—');
+  const chan = (typeof p.chan === 'number' && p.chan > 9) ? '?' : chLabel({chan: p.chan});
+  return `<tr><td>${t}</td><td>${chan}</td><td>${chFreq(p.freq)}</td><td>${dfEsc(p.sf)}</td>
+    <td>${p.rssi ?? '—'}</td><td>${p.snr ?? '—'}</td><td>${p.size ?? '—'}</td>
+    <td>${crc}</td><td>${what}</td></tr>`;
+}
+async function refreshChannels() {
+  let j;
+  try { j = await (await fetch('/api/channels')).json(); } catch (e) { return; }
+  $('chOff').style.display = j.enabled ? 'none' : '';
+  $('chOn').style.display = j.enabled ? '' : 'none';
+  if (!j.enabled) return;
+  const now = j.now, chans = j.channels || [];
+  const total = chans.reduce((s, c) => s + c.total, 0);
+  const bad = chans.reduce((s, c) => s + c.crc_bad, 0);
+  const live = chans.filter(c => c.last_ts && now - c.last_ts < 60).length;
+  const lastMin = chans.reduce((s, c) => s + (c.per_min[c.per_min.length - 1] || 0), 0);
+  const st = j.stat;
+  $('chSummary').innerHTML =
+    statCard('Listening', chans.length, 'channels') +
+    statCard('Active (60 s)', live, 'channels') +
+    statCard('Packets', total, 'since ' + fmtAge(now - j.started)) +
+    statCard('CRC errors', bad, total ? (100 * bad / total).toFixed(1) + '%' : '') +
+    statCard('Last minute', lastMin, 'pkts') +
+    statCard('Sync word', j.public == null ? '—' : j.public ? 'public' : 'private', '') +
+    statCard('Forwarder', st ? st.rxnb : '—',
+             st ? `rx / ${st.rxok} ok · ${fmtAge(now - st.rx_ts)} ago` : 'no stat yet');
+  $('chGrid').innerHTML = chans.length
+    ? chans.map(c => chCard(c, now)).join('')
+    : '<div class="placeholder">No channel plan and no packets yet.</div>';
+  const n = j.minutes;
+  const x = Array.from({length: n}, (_, i) => i - n + 1);
+  Plotly.react('chHeat', [{
+    type: 'heatmap', x, y: chans.map(c => `${chLabel(c)} ${chFreq(c.freq)}`),
+    z: chans.map(c => c.per_min), colorscale: [[0, '#f4f5f7'], [0.001, '#dbe7ff'], [1, '#5856d6']],
+    hovertemplate: '%{y}<br>%{x} min: %{z} pkts<extra></extra>', xgap: 1, ygap: 2,
+    colorbar: {title: {text: 'pkts/min', side: 'right'}, thickness: 10},
+  }], Object.assign({}, layoutDark, {
+    margin: {l: 120, r: 20, t: 10, b: 35}, hovermode: 'closest',
+    xaxis: {title: 'minutes ago', zeroline: false, gridcolor: 'rgba(0,0,0,0)'},
+    yaxis: {autorange: 'reversed', gridcolor: 'rgba(0,0,0,0)'},
+  }), plotlyConfig);
+  const rec = j.recent || [];
+  $('chRecent').innerHTML = rec.length
+    ? '<table><thead><tr><th>Time</th><th>Chan</th><th>MHz</th><th>SF</th><th>RSSI</th>' +
+      '<th>SNR</th><th>Bytes</th><th>CRC</th><th>Packet</th></tr></thead><tbody>' +
+      rec.map(chRecentRow).join('') + '</tbody></table>'
+    : '<div class="placeholder">No packets received since the server started.</div>';
+}
+setInterval(() => { if (activeTab === 'channels') refreshChannels(); }, 2000);
 
 // ---- Remote config ----
 async function refreshConfig() {
