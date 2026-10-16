@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Saturn LoRa Dashboard</title>
+<title>Gateway</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -702,6 +702,7 @@
     <button class="tab" data-tab="map"><span class="ico">🗺️</span>Map</button>
     <button class="tab" data-tab="topology"><span class="ico">🕸️</span>Mesh Topology</button>
     <button class="tab" data-tab="channels"><span class="ico">📶</span>Channels</button>
+    <button class="tab" data-tab="climate"><span class="ico">🌡️</span>Enclosure</button>
     <div class="nav-section">Control</div>
     <button class="tab" data-tab="config"><span class="ico">⚙️</span>Config</button>
     <button class="tab" data-tab="ota"><span class="ico">⬆️</span>OTA Update</button>
@@ -794,6 +795,22 @@
         <div class="chart-title">Recent packets (all channels, newest first)</div>
         <div class="ch-tbl" id="chRecent"></div>
       </div>
+    </div>
+  </div>
+
+  <div id="tab-climate" class="tab-panel">
+    <div id="envOff" class="placeholder" style="display:none;">
+      Enclosure monitoring is disabled — start the server without
+      <code>--env-i2c-bus -1</code> and make sure <code>python3-smbus2</code> is installed.
+    </div>
+    <div id="envOn">
+      <div id="envAlerts"></div>
+      <div class="summary" id="envSummary"></div>
+      <div class="charts">
+        <div class="chart"><div class="chart-title">Temperature — case air, Pi CPU &amp; dew point</div><div id="env-temp" style="height:320px;"></div></div>
+        <div class="chart"><div class="chart-title">Case humidity</div><div id="env-hum" style="height:320px;"></div></div>
+      </div>
+      <div class="topo-note" id="envNote"></div>
     </div>
   </div>
 
@@ -1356,6 +1373,93 @@ async function refreshMap() {
   setTimeout(() => leafletMap.invalidateSize(), 100);
 }
 
+// ---- Enclosure (SHT3x inside the gateway case + Pi CPU temp) ----
+// Alert thresholds. Pi 3 soft-throttles at 60–80 °C SoC; outdoor gateway
+// electronics are typically rated to ~60–70 °C ambient.
+const ENC = { caseWarn:50, caseCrit:60, cpuWarn:70, cpuCrit:80, condWarn:3 };
+
+function throttleText(t) {
+  if (t == null) return null;
+  const now = [], past = [];
+  if (t & 0x1) now.push('under-voltage');
+  if (t & 0x4) now.push('throttled');
+  if (t & 0x8) now.push('soft temp limit');
+  if (t & 0x10000) past.push('under-voltage');
+  if (t & 0x40000) past.push('throttled');
+  if (t & 0x80000) past.push('soft temp limit');
+  return {now, past};
+}
+
+async function refreshClimate() {
+  const hours = parseFloat($('range').value);
+  const j = await fetch(`/api/env?hours=${hours}`).then(r => r.json());
+  $('envOff').style.display = j.enabled ? 'none' : 'block';
+  $('envOn').style.display = j.enabled ? 'block' : 'none';
+  if (!j.enabled) return;
+
+  const st = j.status, lat = j.latest, s = j.data.stats;
+  const fmt = (v, d=1) => (v == null ? '—' : v.toFixed(d));
+  const cpu = st.cpu_now_c ?? (lat ? lat.cpu_c : null);
+  const margin = lat && lat.dew_c != null ? lat.temp_c - lat.dew_c : null;
+  const thr = throttleText(st.throttled);
+  const color = (v, w, c) => v == null ? '' : v >= c ? 'var(--bad)' : v >= w ? 'var(--warn)' : '';
+  const colored = (txt, col) => col ? `<span style="color:${col}">${txt}</span>` : txt;
+
+  const alerts = [];
+  if (lat && lat.temp_c >= ENC.caseCrit) alerts.push(['bad', `Case air is ${fmt(lat.temp_c)} °C — above ${ENC.caseCrit} °C. Shade the enclosure or add ventilation.`]);
+  else if (lat && lat.temp_c >= ENC.caseWarn) alerts.push(['warn', `Case air is ${fmt(lat.temp_c)} °C — getting hot (≥ ${ENC.caseWarn} °C).`]);
+  if (cpu != null && cpu >= ENC.cpuCrit) alerts.push(['bad', `Pi CPU at ${fmt(cpu)} °C — it will throttle hard.`]);
+  else if (cpu != null && cpu >= ENC.cpuWarn) alerts.push(['warn', `Pi CPU at ${fmt(cpu)} °C — approaching the throttle limit.`]);
+  if (margin != null && margin < ENC.condWarn) alerts.push(['warn', `Condensation risk: case air is only ${fmt(margin)} °C above its dew point.`]);
+  if (thr && thr.now.length) alerts.push(['bad', `Pi is currently ${thr.now.join(', ')}.`]);
+  if (!st.ok) alerts.push(['bad', `Sensor error: ${st.error}`]);
+  $('envAlerts').innerHTML = alerts.map(([lvl, msg]) =>
+    `<div style="margin:0 0 12px;padding:10px 14px;border-radius:var(--radius-sm);font-size:13px;font-weight:600;` +
+    `border:1px solid var(--${lvl});background:color-mix(in srgb, var(--${lvl}) 10%, transparent);">` +
+    `${lvl === 'bad' ? '⛔' : '⚠️'} ${msg}</div>`).join('');
+
+  const thrTxt = !thr ? '—'
+    : thr.now.length ? colored('● ' + thr.now.join(', '), 'var(--bad)')
+    : thr.past.length ? colored('● earlier: ' + thr.past.join(', '), 'var(--warn)')
+    : colored('● none', 'var(--good)');
+  $('envSummary').innerHTML = [
+    statCard('Case air', lat ? colored(fmt(lat.temp_c), color(lat.temp_c, ENC.caseWarn, ENC.caseCrit)) : '—', '°C'),
+    statCard('Pi CPU', colored(fmt(cpu), color(cpu, ENC.cpuWarn, ENC.cpuCrit)), '°C'),
+    statCard('Case peak (range)', colored(fmt(s.temp_max), color(s.temp_max, ENC.caseWarn, ENC.caseCrit)), '°C'),
+    statCard('CPU peak (range)', colored(fmt(s.cpu_max), color(s.cpu_max, ENC.cpuWarn, ENC.cpuCrit)), '°C'),
+    statCard('Case humidity', lat ? fmt(lat.hum_pct) : '—', '%'),
+    statCard('Dew point', lat ? fmt(lat.dew_c) : '—', '°C'),
+    statCard('Condensation margin', margin != null ? colored(fmt(margin), margin < ENC.condWarn ? 'var(--warn)' : '') : '—', '°C'),
+    statCard('Throttling', thrTxt),
+    statCard('Last reading', lat ? fmtAge(j.now - lat.ts) + ' ago' : 'never'),
+  ].join('');
+
+  const d = j.data;
+  const x = d.ts.map(t => new Date(t*1000));
+  const tr = (name, y, color, extra={}) => ({x, y, name, mode:'lines', line:{color, width:2}, ...extra});
+  const hline = (y, color) => ({type:'line', xref:'paper', x0:0, x1:1, y0:y, y1:y,
+                                line:{color, width:1, dash:'dot'}});
+  Plotly.react('env-temp', d.ts.length ? [
+      tr('Case air °C', d.temp_c, '#ef4444'),
+      tr('Pi CPU °C', d.cpu_c, '#f59e0b'),
+      tr('Dew point °C', d.dew_c, '#3b82f6', {line:{color:'#3b82f6', width:1.5, dash:'dash'}}),
+    ] : [],
+    {...layoutDark, yaxis:{...layoutDark.yaxis, title:'°C'},
+     shapes:[hline(ENC.caseWarn, '#ff9500'), hline(ENC.caseCrit, '#ff3b30')]}, plotlyConfig);
+  Plotly.react('env-hum', d.ts.length ? [tr('Case humidity %', d.hum_pct, '#3b82f6')] : [],
+    {...layoutDark, yaxis:{...layoutDark.yaxis, title:'%RH', range:[0,100]}}, plotlyConfig);
+
+  const avg = d.bucket_s ? ` (shown as ${fmtAge(d.bucket_s)} averages)` : '';
+  $('envNote').innerHTML =
+    `${d.count} readings in range${avg} · sampled every ${st.interval}s` +
+    (st.addr ? ` from SHT3x @ ${st.addr} inside the case` : '') +
+    ` · dotted lines = ${ENC.caseWarn} / ${ENC.caseCrit} °C case limits` +
+    ` · <a href="/api/env.csv?hours=${hours}" download>Download CSV</a>` +
+    ` · <a href="/api/env.csv?hours=0" download>full history</a>`;
+}
+setInterval(() => { if (activeTab === 'climate') refreshClimate(); }, 30000);
+$('range').addEventListener('change', () => { if (activeTab === 'climate') refreshClimate(); });
+
 // ---- Tabs ----
 let activeTab = 'dashboard';
 function selectTab(name) {
@@ -1375,6 +1479,9 @@ function selectTab(name) {
   }
   if (name === 'channels') {
     refreshChannels();
+  }
+  if (name === 'climate') {
+    refreshClimate();
   }
   if (name === 'ota') {
     otaOnEnter();

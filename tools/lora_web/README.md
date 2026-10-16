@@ -49,3 +49,22 @@ ignored — they don't carry temp/humidity/INA219 anyway.
 
 By default binds to `0.0.0.0` so other devices on the LAN can reach it. Bind
 to localhost only with `--bind 127.0.0.1`.
+
+## Enclosure tab (gateway Pi only)
+
+On the outdoor gateway Pi an SHT3x sits inside the case on I2C-1
+(pin 1 3V3, pin 3 SDA, pin 5 SCL, pin 9 GND; address 0x44). `local_env.py`
+samples it every 60 s together with the Pi CPU temperature and stores the
+readings in the `env_readings` table of `beacons.db`. The **Enclosure** tab
+shows case air / CPU / dew point, peaks, condensation margin, throttle state
+and alerts (thresholds in `const ENC` in `index.html`), plus CSV export at
+`/api/env.csv?hours=N` (`hours=0` = full history).
+
+```bash
+sudo apt install python3-smbus2
+python3 server.py --env-interval 60      # default; --env-i2c-bus -1 disables it
+```
+
+The Pi runs I2C at 10 kHz (`dtparam=i2c_arm_baudrate=10000` in
+`/boot/firmware/config.txt`). The SHT3x resets on every measurement if its
+VCC/GND contact is poor (status register bit 4 set again after a measure).

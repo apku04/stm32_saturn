@@ -1273,6 +1273,28 @@ def make_handler(store: Store):
                     out["gateway"] = store.device_info()
                     self._send_json(out)
                     return
+                if u.path in ("/api/env", "/api/env.csv"):
+                    env = getattr(store, "env", None)
+                    now = int(time.time())
+                    if env is None:
+                        self._send_json({"enabled": False, "now": now})
+                        return
+                    hours = float(q.get("hours", ["24"])[0])
+                    since = 0 if hours <= 0 else now - int(hours * 3600)
+                    if u.path == "/api/env.csv":
+                        data = env.csv(since, now).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "text/csv; charset=utf-8")
+                        self.send_header("Content-Disposition",
+                                         'attachment; filename="gateway_climate.csv"')
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
+                    self._send_json({"enabled": True, "now": now, "since": since,
+                                     "status": env.status(), "latest": env.latest(),
+                                     "data": env.series(since, now)})
+                    return
                 if u.path == "/api/firmwares":
                     self._send_json({"firmwares": discover_firmwares()})
                     return
@@ -1450,6 +1472,10 @@ def main():
     ap.add_argument("--gateway-conf", default=None, metavar="PATH",
                     help="packet forwarder global_conf.json, so the Channels tab "
                          "lists every listening channel (even quiet ones)")
+    ap.add_argument("--env-i2c-bus", type=int, default=1, metavar="N",
+                    help="I2C bus of the local SHT3x temp/humidity sensor (-1 = disabled)")
+    ap.add_argument("--env-interval", type=float, default=60.0, metavar="SEC",
+                    help="seconds between SHT3x samples")
     args = ap.parse_args()
 
     print(f"[db] {args.db}", flush=True)
@@ -1493,6 +1519,14 @@ def main():
             args=("0.0.0.0", args.gateway_udp, store, stop, store.chanmon),
             daemon=True,
         ).start()
+
+    if args.env_i2c_bus >= 0:
+        try:
+            import local_env
+            store.env = local_env.EnvLogger(args.db, args.env_i2c_bus, args.env_interval)
+            threading.Thread(target=store.env.run, args=(stop,), daemon=True).start()
+        except ImportError as e:
+            print(f"[env] disabled: {e}", flush=True)
 
     httpd = ThreadingHTTPServer((args.bind, args.http_port), make_handler(store))
     url = f"http://{args.bind if args.bind != '0.0.0.0' else 'localhost'}:{args.http_port}/"
